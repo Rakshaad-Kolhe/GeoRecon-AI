@@ -85,6 +85,20 @@ class SfmCfg(BaseModel):
     use_gpu: Union[bool, str] = "auto"   # "auto" | true | false
 
 
+class GeorefCfg(BaseModel):
+    """Georeferencing (SfM -> local ENU) tuning."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: str = "auto"                 # "auto" | "sim3" | "collinear"
+    collinear_ratio: float = 0.1       # sigma2/sigma1 below this -> collinear branch
+    ransac_thr_m: float = 5.0
+    ransac_iters: int = 1000
+    plane_thr_frac: float = 0.02       # x cloud extent -> ground-plane inlier band
+    holdout_folds: int = 5
+    seed: int = 0
+
+
 class JobConfig(BaseModel):
     """Per-job configuration, serialised to ``<job_dir>/config.json``."""
 
@@ -100,6 +114,7 @@ class JobConfig(BaseModel):
     keyframes: KeyframeCfg = KeyframeCfg()
     masking: MaskCfg = MaskCfg()
     sfm: SfmCfg = SfmCfg()
+    georef: GeorefCfg = GeorefCfg()
 
     @property
     def resolved_preset(self) -> Preset:
