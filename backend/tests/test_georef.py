@@ -82,7 +82,12 @@ def test_holdout_rmse_robust_to_single_outlier():
     ho = holdout_rmse("sim3", C, U_out, np.zeros((0, 3)), None, inl_out, cfg)
     assert ho["h"] <= 1.5 * clean
     assert ho["h_all"] > 5.0 * ho["h"]                  # outlier-inclusive still sees it
-    assert len(ho["folds_h"]) == 5
+    assert len(ho["folds_h"]) == len(ho["folds_v"]) == len(ho["folds_h_all"]) == 5
+    # fold holding frame 18: inlier-only fold RMSE stays small, *_all spikes.
+    k = next(i for i, fold in enumerate(georef.contiguous_folds(len(C), 5))
+             if 18 in fold)
+    assert ho["folds_h"][k] <= 1.5 * clean
+    assert ho["folds_h_all"][k] > 5.0 * ho["folds_h"][k]
 
 
 def test_rmse_h_reported_over_inliers_not_all_pairs():
