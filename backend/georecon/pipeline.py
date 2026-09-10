@@ -18,6 +18,7 @@ from georecon.stages import ingest as _ingest_stage
 from georecon.stages import keyframes as _keyframes_stage
 from georecon.stages import masking as _masking_stage
 from georecon.stages import sfm as _sfm_stage
+from georecon.stages import georef as _georef_stage
 
 # Ordered stage registry. Later PRs append their stages here.
 STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
@@ -25,6 +26,7 @@ STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
     ("keyframes", _keyframes_stage.run),
     ("masking", _masking_stage.run),
     ("sfm", _sfm_stage.run),
+    ("georef", _georef_stage.run),
 ]
 
 
