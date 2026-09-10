@@ -47,11 +47,12 @@ def _transform_cloud(d: dict, s: float, R: np.ndarray, t: np.ndarray) -> dict:
 def _points_per_m2(xyz: np.ndarray) -> float:
     if len(xyz) < 3:
         return 0.0
-    try:
-        from scipy.spatial import ConvexHull
+    from scipy.spatial import ConvexHull  # required dep — let ImportError surface
+    from scipy.spatial import QhullError
 
+    try:
         area = float(ConvexHull(xyz[:, :2]).volume)   # 2-D hull "volume" == area
-    except Exception:                                 # noqa: BLE001
+    except QhullError:                                # collinear / degenerate XY
         return 0.0
     return float(len(xyz) / area) if area > 0 else 0.0
 

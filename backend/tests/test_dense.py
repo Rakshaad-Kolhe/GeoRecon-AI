@@ -6,7 +6,7 @@ from georecon import pipeline
 from georecon.config import JobConfig, settings
 from georecon.pipeline import JobPaths
 from georecon.stages import dense
-from georecon.stages.dense import _transform_cloud
+from georecon.stages.dense import _points_per_m2, _transform_cloud
 from georecon.util import colmap_cli
 from georecon.util.ply import read_ply, write_ply
 
@@ -36,6 +36,13 @@ def test_transform_cloud_keeps_unit_normals():
     assert np.allclose(on, nrm @ R.T, atol=1e-6)          # rotation only
     oxyz = np.stack([out["x"], out["y"], out["z"]], -1)
     assert np.allclose(oxyz, 7.3 * (xyz @ R.T) + np.array([10.0, -3.0, 2.0]))
+
+
+def test_points_per_m2_square_and_degenerate():
+    sq = np.array([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], float)
+    assert abs(_points_per_m2(sq) - 0.04) < 1e-9        # 4 pts / 100 m^2
+    collinear = np.array([[i, i, 0] for i in range(5)], float)
+    assert _points_per_m2(collinear) == 0.0             # QhullError -> 0, not a crash
 
 
 def test_dense_skips_and_copies_sparse_when_no_colmap(tmp_path, monkeypatch):
