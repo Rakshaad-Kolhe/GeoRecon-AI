@@ -147,13 +147,16 @@ def select(sharpness, disp, lat, lon, cfg: KeyframeCfg, flow_thr_px: float,
     """Pick keyframe positions from the analysed arrays. Pure: no I/O.
 
     Returns ``(positions, reasons, final_thr)`` where ``positions`` indexes the
-    input arrays and ``reasons`` counts ``rejected_blur / rejected_hover / forced``.
+    input arrays and ``reasons`` counts
+    ``rejected_blur / rejected_hover / forced / forced_lost``.
     """
     sharpness = np.asarray(sharpness, dtype=float)
-    disp0 = np.nan_to_num(np.asarray(disp, dtype=float), nan=0.0)
+    disp_raw = np.asarray(disp, dtype=float)
+    lost_mask = ~np.isfinite(disp_raw)
     n = len(sharpness)
+    _zero = {"rejected_blur": 0, "rejected_hover": 0, "forced": 0, "forced_lost": 0}
     if n == 0:
-        return [], {"rejected_blur": 0, "rejected_hover": 0, "forced": 0}, flow_thr_px
+        return [], dict(_zero), flow_thr_px
 
     med = (pd.Series(sharpness)
            .rolling(cfg.blur_window, center=True, min_periods=1)
@@ -161,20 +164,36 @@ def select(sharpness, disp, lat, lon, cfg: KeyframeCfg, flow_thr_px: float,
     sharp_ok = sharpness >= cfg.blur_ratio * med
     x, y = _equirect_xy(np.asarray(lat, dtype=float), np.asarray(lon, dtype=float))
     has_xy = np.isfinite(x) & np.isfinite(y)
+    step_move = np.full(n, np.nan)
+    if n > 1:
+        step_move[1:] = np.hypot(np.diff(x), np.diff(y))
+
+    def _eff_disp(i: int, thr: float, reasons: dict) -> float:
+        """Per-step displacement, resolving lost-tracking frames via GPS."""
+        if not lost_mask[i]:
+            return float(disp_raw[i])
+        moved = (i > 0 and has_xy[i] and has_xy[i - 1]
+                 and step_move[i] >= cfg.min_gps_move_m)
+        no_gps = not (i > 0 and has_xy[i] and has_xy[i - 1])
+        if moved or no_gps:                        # force a boundary
+            reasons["forced_lost"] += 1
+            return thr
+        return 0.0                                 # lost but GPS says we hovered
 
     def _run(thr: float):
         idxs: list[int] = []
-        reasons = {"rejected_blur": 0, "rejected_hover": 0, "forced": 0}
+        reasons = dict(_zero)
         accum = 0.0
         win: list[tuple[int, float]] = []   # (pos, accum_at_pos)
         last: int | None = None
         last_sharp: int | None = None
 
         for i in range(n):
+            eff = _eff_disp(i, thr, reasons) if last is not None else 0.0
             if not sharp_ok[i]:
                 reasons["rejected_blur"] += 1
                 if last is not None:
-                    accum += disp0[i]
+                    accum += eff
                 continue
             last_sharp = i
             if last is None:                       # first sharp candidate: always in
@@ -184,7 +203,7 @@ def select(sharpness, disp, lat, lon, cfg: KeyframeCfg, flow_thr_px: float,
                 win = []
                 continue
 
-            accum += disp0[i]
+            accum += eff
             if accum >= 0.7 * thr:
                 win.append((i, accum))
             if not (accum >= thr or (accum >= 1.5 * thr and not win)):
@@ -348,9 +367,10 @@ def run(ctx: "StageContext") -> dict:
         kf, flow_thr_px, ctx.preset.max_keyframes,
     )
     select_s = time.time() - t_sel
-    ctx.log.info("selected %d keyframes (thr %.1f px, blur-rej %d, hover-rej %d, forced %d)",
+    ctx.log.info("selected %d keyframes (thr %.1f px, blur-rej %d, hover-rej %d, "
+                 "forced %d, forced-lost %d)",
                  len(positions), final_thr, reasons["rejected_blur"],
-                 reasons["rejected_hover"], reasons["forced"])
+                 reasons["rejected_hover"], reasons["forced"], reasons["forced_lost"])
 
     # ---- phase 3 ----------------------------------------------------------
     rows, grab3, extract_s = _extract(
@@ -382,6 +402,7 @@ def run(ctx: "StageContext") -> dict:
         "rejected_blur": reasons["rejected_blur"],
         "rejected_hover": reasons["rejected_hover"],
         "forced": reasons["forced"],
+        "forced_lost": reasons["forced_lost"],
         "lost_tracking": data["lost"],
         "flow_thr_px": round(final_thr, 3),
         "est_overlap_mean": round(est_overlap, 4),

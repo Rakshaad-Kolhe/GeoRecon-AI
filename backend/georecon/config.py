@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GEORECON_", extra="ignore")
 
     jobs_dir: str = "jobs"
+    models_dir: str = "models"
     max_upload_mb: int = 2048
     colmap_backend: Literal["pycolmap", "cli"] = "pycolmap"
 
@@ -53,6 +54,23 @@ class KeyframeCfg(BaseModel):
     jpeg_quality: int = 95
 
 
+class MaskCfg(BaseModel):
+    """Dynamic-object (YOLO segmentation) masking tuning."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str = "yolo11n-seg.pt"
+    imgsz: int = 1280
+    conf: float = 0.25
+    # COCO ids: person/bicycle/car/motorcycle/bus/train/truck/boat + common animals.
+    classes: list[int] = Field(
+        default_factory=lambda: [0, 1, 2, 3, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19]
+    )
+    dilate_frac: float = 0.01
+    batch: int = 8
+    max_masked_warn: float = 0.5
+
+
 class JobConfig(BaseModel):
     """Per-job configuration, serialised to ``<job_dir>/config.json``."""
 
@@ -66,6 +84,7 @@ class JobConfig(BaseModel):
     # telemetry_t = video_t + telemetry_offset_s (applied when sampling telemetry).
     telemetry_offset_s: float = 0.0
     keyframes: KeyframeCfg = KeyframeCfg()
+    masking: MaskCfg = MaskCfg()
 
     @property
     def resolved_preset(self) -> Preset:
