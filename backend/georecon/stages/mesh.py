@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from georecon.util import colmap_cli
-from georecon.util.ply import read_ply, write_ply
+from georecon.util.ply import read_ply
 
 if TYPE_CHECKING:
     from georecon.pipeline import StageContext
@@ -328,9 +328,9 @@ def run(ctx: "StageContext") -> dict:
             mesh = _decimate(mesh, mcfg.max_tris, enu_xyz, enu_rgb)
 
     vcol = np.asarray(mesh.visual.vertex_colors)[:, :3].astype(np.uint8)
-    write_ply(paths.mesh_ply, np.asarray(mesh.vertices, float), {
-        "red": vcol[:, 0], "green": vcol[:, 1], "blue": vcol[:, 2],
-    })
+    mesh.visual.vertex_colors = vcol
+    # binary PLY *with faces* (util.ply is vertex-only) — exports read this back.
+    paths.mesh_ply.write_bytes(mesh.export(file_type="ply", encoding="binary"))
     try:
         render_preview(mesh.vertices, mesh.faces, vcol, paths.mesh_preview)
     except Exception as exc:                           # noqa: BLE001

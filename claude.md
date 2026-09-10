@@ -110,6 +110,9 @@ jobs/<id>/
 | balanced | 300           | 1600            | 1200               |
 | accurate | 600           | 2000            | 1600               |
 
+`dense.ref_stride` is 1 for every preset (stride 2 roughly quartered the fused
+cloud on the aukerman clip). It stays as an opt-in `--set dense.ref_stride=N`.
+
 ## API contract
 
 - `POST /api/jobs` multipart: `video`, `telemetry` (optional), `preset`, `mask_dynamic` → `{job_id}`

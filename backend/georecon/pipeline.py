@@ -21,6 +21,8 @@ from georecon.stages import sfm as _sfm_stage
 from georecon.stages import georef as _georef_stage
 from georecon.stages import dense as _dense_stage
 from georecon.stages import mesh as _mesh_stage
+from georecon.stages import export as _export_stage
+from georecon.stages import validate as _validate_stage
 
 # Ordered stage registry. Later PRs append their stages here.
 STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
@@ -31,6 +33,8 @@ STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
     ("georef", _georef_stage.run),
     ("dense", _dense_stage.run),
     ("mesh", _mesh_stage.run),
+    ("export", _export_stage.run),
+    ("validate", _validate_stage.run),
 ]
 
 
@@ -68,6 +72,8 @@ class JobPaths:
     georef: Path
     georef_transform: Path
     georef_origin: Path
+    georef_cameras: Path
+    georef_residuals: Path
     dense: Path
     dense_fused: Path
     mesh: Path
@@ -77,6 +83,7 @@ class JobPaths:
     outputs_web: Path
     report: Path
     metrics_json: Path
+    summary_md: Path
     status_json: Path
     log_txt: Path
     stages_dir: Path
@@ -96,6 +103,8 @@ class JobPaths:
             georef=r / "georef",
             georef_transform=r / "georef" / "transform.json",
             georef_origin=r / "georef" / "origin.json",
+            georef_cameras=r / "georef" / "cameras_enu.csv",
+            georef_residuals=r / "georef" / "residuals.csv",
             dense=r / "dense",
             dense_fused=r / "dense" / "fused.ply",
             mesh=r / "mesh",
@@ -105,6 +114,7 @@ class JobPaths:
             outputs_web=r / "outputs" / "web",
             report=r / "report",
             metrics_json=r / "report" / "metrics.json",
+            summary_md=r / "report" / "summary.md",
             status_json=r / "status.json",
             log_txt=r / "log.txt",
             stages_dir=r / ".stages",
