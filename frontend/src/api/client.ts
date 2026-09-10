@@ -1,4 +1,4 @@
-import type { CreateJobInput, JobDetail, JobStatus } from './types'
+import type { CreateJobInput, JobDetail, JobStatus, ViewerMeta } from './types'
 import { mockApi } from './mock'
 
 export interface Api {
@@ -9,6 +9,10 @@ export interface Api {
     onUploadProgress?: (fraction: number) => void,
   ): Promise<{ job_id: string }>
   getLog(id: string, tail?: number): Promise<string>
+  /** Load web/meta.json; mocks synthesise a procedural site when no files exist. */
+  prepareViewer(jobId: string): Promise<ViewerMeta>
+  /** Resolve a served path under a job's outputs/ or report/ (or web/) to a URL. */
+  fileUrl(jobId: string, path: string): string
 }
 
 export class ApiError extends Error {
@@ -82,6 +86,16 @@ const realApi: Api = {
     )
     if (!res.ok) throw new ApiError(res.status, res.statusText)
     return res.text()
+  },
+
+  async prepareViewer(id) {
+    return j<ViewerMeta>(
+      await fetch(`/api/jobs/${encodeURIComponent(id)}/files/web/meta.json`),
+    )
+  },
+
+  fileUrl(id, path) {
+    return `/api/jobs/${encodeURIComponent(id)}/files/${path.replace(/^\/+/, '')}`
   },
 }
 

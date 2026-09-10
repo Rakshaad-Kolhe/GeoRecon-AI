@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { JobDetail } from '../api/types'
 import { MetricsPanel } from './MetricsPanel'
 import { Panel } from './Panel'
+import { ViewerHost } from './viewer/ViewerHost'
 
 const TABS = ['3D', 'Measure', 'Map', 'Metrics', 'Downloads'] as const
 type Tab = (typeof TABS)[number]
@@ -21,6 +22,11 @@ export function ResultsTabs({ job }: { job: JobDetail }) {
   const [tab, setTab] = useState<Tab>('Metrics')
   const done = job.state === 'done'
 
+  // Mount the WebGL viewer once (first time 3D/Measure is opened) and keep it
+  // alive — toggling tabs only shows/hides it, so there is never a second context.
+  const viewerActive = tab === '3D' || tab === 'Measure'
+  const [viewerMounted, setViewerMounted] = useState(false)
+
   return (
     <Panel title="Results">
       <div className="mb-4 flex flex-wrap gap-1 border-b border-slate-800">
@@ -29,7 +35,10 @@ export function ResultsTabs({ job }: { job: JobDetail }) {
             key={t}
             type="button"
             disabled={!done}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t)
+              if (t === '3D' || t === 'Measure') setViewerMounted(true)
+            }}
             className={`-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors ${
               tab === t && done
                 ? 'border-cyan-400 text-cyan-300'
@@ -43,24 +52,41 @@ export function ResultsTabs({ job }: { job: JobDetail }) {
 
       {!done ? (
         <p className="text-sm text-slate-600">Results unlock when the job finishes.</p>
-      ) : tab === 'Metrics' ? (
-        <MetricsPanel metrics={job.metrics} />
-      ) : tab === 'Downloads' ? (
-        <ul className="space-y-1 font-mono text-xs text-slate-400">
-          {DOWNLOADS.map((f) => (
-            <li
-              key={f}
-              className="flex justify-between rounded border border-slate-800 px-2 py-1"
-            >
-              <span>{f}</span>
-              <span className="text-slate-600">stub</span>
-            </li>
-          ))}
-        </ul>
       ) : (
-        <div className="flex h-40 items-center justify-center rounded border border-dashed border-slate-800 text-sm text-slate-600">
-          {tab} viewer — {tab === 'Map' ? 'PR 13' : 'PR 12'}
-        </div>
+        <>
+          {viewerMounted && (
+            <div className={viewerActive ? '' : 'hidden'}>
+              <ViewerHost
+                key={job.job_id}
+                job={job}
+                mode={tab === 'Measure' ? 'measure' : 'view'}
+                active={viewerActive}
+              />
+            </div>
+          )}
+
+          {tab === 'Metrics' && <MetricsPanel metrics={job.metrics} />}
+
+          {tab === 'Downloads' && (
+            <ul className="space-y-1 font-mono text-xs text-slate-400">
+              {DOWNLOADS.map((f) => (
+                <li
+                  key={f}
+                  className="flex justify-between rounded border border-slate-800 px-2 py-1"
+                >
+                  <span>{f}</span>
+                  <span className="text-slate-600">stub</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {tab === 'Map' && (
+            <div className="flex h-40 items-center justify-center rounded border border-dashed border-slate-800 text-sm text-slate-600">
+              Map viewer — PR 13
+            </div>
+          )}
+        </>
       )}
     </Panel>
   )

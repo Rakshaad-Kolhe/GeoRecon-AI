@@ -59,3 +59,16 @@ export interface CreateJobInput {
   mask_dynamic: boolean
   telemetry_offset_s: number
 }
+
+// web/meta.json emitted by backend PR 08 alongside the downsampled web assets.
+// Scene is local ENU in metres, +Z up.
+export interface ViewerMeta {
+  origin: { lat: number; lon: number; alt: number }
+  utm_epsg: number
+  bbox_enu: { min: [number, number, number]; max: [number, number, number] }
+  points: number
+  triangles: number
+  median_spacing_m: number
+  trajectory_enu: [number, number, number][]
+  height_ref: string
+}

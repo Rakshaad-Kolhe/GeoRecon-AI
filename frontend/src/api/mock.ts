@@ -1,10 +1,12 @@
 import type { Api } from './client'
+import { generateMockSite, hashSeed } from './mockSite'
 import type {
   CreateJobInput,
   JobDetail,
   Metrics,
   StageMetrics,
   StageName,
+  ViewerMeta,
 } from './types'
 import { STAGE_NAMES } from './types'
 
@@ -274,6 +276,51 @@ function slug(name: string): string {
   )
 }
 
+// ---- viewer assets -------------------------------------------------
+
+interface ViewerEntry {
+  meta: ViewerMeta
+  publicAssets: boolean
+  urls: Record<string, string>
+}
+
+const viewerCache = new Map<string, ViewerEntry>()
+
+function blobUrl(data: BlobPart, type: string): string {
+  return URL.createObjectURL(new Blob([data], { type }))
+}
+
+async function prepareViewerEntry(jobId: string): Promise<ViewerEntry> {
+  const hit = viewerCache.get(jobId)
+  if (hit) return hit
+
+  // public override: drop real files under frontend/public/mock/<jobId>/web/
+  try {
+    const res = await fetch(`/mock/${jobId}/web/meta.json`)
+    if (res.ok && res.headers.get('content-type')?.includes('json')) {
+      const meta = (await res.json()) as ViewerMeta
+      const entry: ViewerEntry = { meta, publicAssets: true, urls: {} }
+      viewerCache.set(jobId, entry)
+      return entry
+    }
+  } catch {
+    // fall through to procedural
+  }
+
+  const site = generateMockSite(hashSeed(jobId))
+  const entry: ViewerEntry = {
+    meta: site.meta,
+    publicAssets: false,
+    urls: {
+      'web/meta.json': blobUrl(JSON.stringify(site.meta), 'application/json'),
+      'web/pointcloud.ply': blobUrl(site.cloudPLY, 'application/octet-stream'),
+      'web/mesh.ply': blobUrl(site.meshPLY, 'application/octet-stream'),
+    },
+  }
+  viewerCache.set(jobId, entry)
+  return entry
+}
+
 export const mockApi: Api = {
   async listJobs() {
     const jobs = [...store.values()]
@@ -332,5 +379,18 @@ export const mockApi: Api = {
     const job = store.get(id)
     if (!job) return delay('')
     return delay(logFor(job, tail))
+  },
+
+  async prepareViewer(id) {
+    const entry = await prepareViewerEntry(id)
+    return entry.meta
+  },
+
+  fileUrl(id, path) {
+    const norm = path.replace(/^\/+/, '')
+    const entry = viewerCache.get(id)
+    if (!entry) return `/mock/${id}/${norm}`
+    if (entry.publicAssets) return `/mock/${id}/${norm}`
+    return entry.urls[norm] ?? `/mock/${id}/${norm}`
   },
 }
