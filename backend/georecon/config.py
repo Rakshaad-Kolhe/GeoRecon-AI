@@ -33,12 +33,17 @@ class Preset:
     max_keyframes: int
     frame_long_side: int
     mvs_max_image_size: int
+    # dense MVS speed knobs (see DenseCfg); accurate widens them
+    mvs_num_src_images: int = 8
+    mvs_window_radius: int = 4
+    mvs_num_iterations: int = 4
 
 
 PRESETS: dict[str, Preset] = {
     "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=800),
     "balanced": Preset(max_keyframes=300, frame_long_side=1600, mvs_max_image_size=1200),
-    "accurate": Preset(max_keyframes=600, frame_long_side=2000, mvs_max_image_size=1600),
+    "accurate": Preset(max_keyframes=600, frame_long_side=2000, mvs_max_image_size=1600,
+                       mvs_num_src_images=12, mvs_window_radius=5, mvs_num_iterations=5),
 }
 
 
@@ -102,6 +107,18 @@ class GeorefCfg(BaseModel):
     seed: int = 0
 
 
+class DenseCfg(BaseModel):
+    """Dense MVS (patch-match) speed knobs. Defaults match the fast/balanced
+    presets; ``accurate`` widens them. An explicit override here (e.g.
+    ``--set dense.window_radius=6``) wins over the preset."""
+
+    model_config = ConfigDict(frozen=True)
+
+    num_src_images: int = 8      # image_undistorter --num_patch_match_src_images
+    window_radius: int = 4       # PatchMatchStereo.window_radius
+    num_iterations: int = 4      # PatchMatchStereo.num_iterations
+
+
 class JobConfig(BaseModel):
     """Per-job configuration, serialised to ``<job_dir>/config.json``."""
 
@@ -118,6 +135,7 @@ class JobConfig(BaseModel):
     masking: MaskCfg = MaskCfg()
     sfm: SfmCfg = SfmCfg()
     georef: GeorefCfg = GeorefCfg()
+    dense: DenseCfg = DenseCfg()
 
     @property
     def resolved_preset(self) -> Preset:
@@ -126,6 +144,16 @@ class JobConfig(BaseModel):
                 f"unknown preset {self.preset!r}; choose from {sorted(PRESETS)}"
             )
         return PRESETS[self.preset]
+
+    @property
+    def resolved_dense(self) -> DenseCfg:
+        """Preset dense knobs unless the job overrode ``dense`` explicitly."""
+        p = self.resolved_preset
+        if self.dense != DenseCfg():
+            return self.dense
+        return DenseCfg(num_src_images=p.mvs_num_src_images,
+                        window_radius=p.mvs_window_radius,
+                        num_iterations=p.mvs_num_iterations)
 
     def to_json(self, job_dir) -> Path:
         path = Path(job_dir) / "config.json"

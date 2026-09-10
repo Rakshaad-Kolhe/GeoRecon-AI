@@ -98,11 +98,13 @@ def _fit(branch, C, U, pts, view_dirs, cfg, seed):
 def holdout_rmse(branch, C, U, pts, view_dirs, full_inliers, cfg):
     """Contiguous-block hold-out. Each fold is fitted with the same robust
     branch on the *training inliers of the full fit* (never plain umeyama, and
-    never on a full-fit outlier). Headline h/v pool held-out frames that are
-    full-fit inliers; ``*_all`` keep every held-out frame.
+    never on a full-fit outlier). Headline h/v and the per-fold ``folds_h`` /
+    ``folds_v`` pool only held-out frames that are full-fit inliers; ``*_all``
+    (pooled and ``folds_h_all``) keep every held-out frame.
     """
     fin = np.asarray(full_inliers, bool)
-    hi, vi, ha, va, folds_h = [], [], [], [], []
+    hi, vi, ha, va = [], [], [], []
+    folds_h, folds_v, folds_h_all = [], [], []
     for fold in contiguous_folds(len(C), cfg.holdout_folds):
         keep = np.ones(len(C), bool)
         keep[fold] = False
@@ -114,21 +116,24 @@ def holdout_rmse(branch, C, U, pts, view_dirs, full_inliers, cfg):
         res = apply(s, R, t, C[fold]) - U[fold]
         h = np.linalg.norm(res[:, :2], axis=1)
         v = np.abs(res[:, 2])
-        folds_h.append(round(float(rmse(h)), 4))
+        m = fin[fold]
+        folds_h_all.append(round(float(rmse(h)), 4))
+        folds_h.append(round(float(rmse(h[m])), 4) if m.any() else float("nan"))
+        folds_v.append(round(float(rmse(v[m])), 4) if m.any() else float("nan"))
         ha.append(h)
         va.append(v)
-        m = fin[fold]
         if m.any():
             hi.append(h[m])
             vi.append(v[m])
+    folds = {"folds_h": folds_h, "folds_v": folds_v, "folds_h_all": folds_h_all}
     if not ha:
         nan = float("nan")
-        return {"h": nan, "v": nan, "h_all": nan, "v_all": nan, "folds_h": folds_h}
+        return {"h": nan, "v": nan, "h_all": nan, "v_all": nan, **folds}
     ha, va = np.concatenate(ha), np.concatenate(va)
     hi_c = np.concatenate(hi) if hi else ha
     vi_c = np.concatenate(vi) if vi else va
     return {"h": rmse(hi_c), "v": rmse(vi_c),
-            "h_all": rmse(ha), "v_all": rmse(va), "folds_h": folds_h}
+            "h_all": rmse(ha), "v_all": rmse(va), **folds}
 
 
 def scale_drift_pct(branch, C, U, pts, view_dirs, full_inliers, cfg, s_full):
@@ -254,7 +259,8 @@ def run(ctx: "StageContext") -> dict:
         rmse_h = rmse_v = rmse_h_all = 0.0
         resid_h_median = resid_h_p90 = resid_h_max = 0.0
 
-    ho = {"h": 0.0, "v": 0.0, "h_all": 0.0, "v_all": 0.0, "folds_h": []}
+    ho = {"h": 0.0, "v": 0.0, "h_all": 0.0, "v_all": 0.0,
+          "folds_h": [], "folds_v": [], "folds_h_all": []}
     drift = 0.0
     if georeferenced:
         pts_for = P if branch == "collinear" else np.zeros((0, 3))
@@ -283,6 +289,8 @@ def run(ctx: "StageContext") -> dict:
         "holdout_rmse_h_all": round(ho["h_all"], 4),
         "holdout_rmse_v_all": round(ho["v_all"], 4),
         "holdout_folds_h": ho["folds_h"],
+        "holdout_folds_v": ho["folds_v"],
+        "holdout_folds_h_all": ho["folds_h_all"],
         "scale_drift_pct": round(drift, 3),
         "up_agreement": (round(up_agreement, 4) if up_agreement is not None else None),
         "track_length_m": round(track_len, 3),
