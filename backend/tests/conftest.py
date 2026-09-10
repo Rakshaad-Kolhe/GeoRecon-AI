@@ -12,6 +12,16 @@ import numpy as np
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_colmap_probe():
+    """The COLMAP CLI probe is process-cached; keep tests independent."""
+    from georecon.util import colmap_cli
+
+    colmap_cli.reset_probe_cache()
+    yield
+    colmap_cli.reset_probe_cache()
+
+
 def _ts(sec: float) -> str:
     ms = int(round(sec * 1000))
     h, ms = divmod(ms, 3_600_000)

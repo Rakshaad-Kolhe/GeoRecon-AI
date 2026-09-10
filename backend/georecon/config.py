@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     models_dir: str = "models"
     max_upload_mb: int = 2048
     colmap_backend: Literal["pycolmap", "cli"] = "pycolmap"
+    colmap_bin: str = ""          # path to a CUDA COLMAP CLI (GEORECON_COLMAP_BIN)
 
 
 settings = Settings()
