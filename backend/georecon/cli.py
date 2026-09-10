@@ -57,17 +57,30 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 def cmd_run(a: argparse.Namespace) -> int:
     job_dir = _job_dir(a.job)
-    job_dir.mkdir(parents=True, exist_ok=True)
 
-    base = dict(
-        preset=a.preset,
-        mask_dynamic=a.mask_dynamic,
-        hfov_deg=a.hfov,
-        force_from=a.force_from,
-        video_path=str(Path(a.video).resolve()),
-        telemetry_path=str(Path(a.telemetry).resolve()) if a.telemetry else None,
-        telemetry_offset_s=a.telemetry_offset,
-    )
+    if a.video is None:
+        # resume an existing job from its config.json (API-created jobs)
+        if not (job_dir / "config.json").exists():
+            print(f"[FAILED] no --video and no config.json in {job_dir}")
+            return 1
+        try:
+            base = JobConfig.from_json(job_dir).model_dump()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[FAILED] bad config.json: {exc}")
+            return 1
+        if a.force_from is not None:
+            base["force_from"] = a.force_from
+    else:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        base = dict(
+            preset=a.preset,
+            mask_dynamic=a.mask_dynamic,
+            hfov_deg=a.hfov,
+            force_from=a.force_from,
+            video_path=str(Path(a.video).resolve()),
+            telemetry_path=str(Path(a.telemetry).resolve()) if a.telemetry else None,
+            telemetry_offset_s=a.telemetry_offset,
+        )
     try:
         merged = _deep_merge(base, parse_set_overrides(a.set))
         cfg = JobConfig(**merged)
@@ -110,7 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("run", help="run the pipeline for a job")
-    r.add_argument("--video", required=True)
+    r.add_argument("--video", default=None,
+                   help="source video; omit to resume an existing job from config.json")
     r.add_argument("--telemetry", default=None)
     r.add_argument("--job", required=True, help="job name (workspace dir under jobs/)")
     r.add_argument("--preset", choices=sorted(PRESETS), default="fast")

@@ -46,7 +46,8 @@ class Preset:
 PRESETS: dict[str, Preset] = {
     # dense.ref_stride stays 1 for every preset (halving depth maps thins the
     # fused cloud ~4x); keep it as an opt-in knob via ``--set dense.ref_stride``.
-    "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=800),
+    "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=640,
+                   mvs_num_iterations=3, mvs_num_src_images=6),
     "balanced": Preset(max_keyframes=300, frame_long_side=1600, mvs_max_image_size=1200,
                        poisson_depth=10, mesh_max_tris=400_000),
     "accurate": Preset(max_keyframes=600, frame_long_side=2000, mvs_max_image_size=1600,
