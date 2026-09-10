@@ -16,6 +16,12 @@ def apply(s, R, t, X):
     return float(s) * (np.asarray(X, float) @ np.asarray(R, float).T) + np.asarray(t, float)
 
 
+def rmse(x) -> float:
+    """Root-mean-square of a 1-D error vector (0.0 if empty)."""
+    x = np.asarray(x, float).ravel()
+    return float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+
+
 def umeyama(src, dst, w=None, dim=3):
     """Least-squares similarity (Umeyama 1991). Returns (s, R, t), det(R) = +1."""
     src = np.asarray(src, float)[:, :dim]

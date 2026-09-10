@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from georecon.util.sim3 import (
     R_to_quat_wxyz,
@@ -6,8 +7,16 @@ from georecon.util.sim3 import (
     fit_plane_ransac,
     quat_wxyz_to_R,
     ransac_sim3,
+    rmse,
     umeyama,
 )
+
+
+def test_rmse_known_vector():
+    assert rmse([3.0, 4.0]) == pytest.approx(12.5 ** 0.5)
+    assert rmse(np.array([[1.0, -1.0], [2.0, -2.0]])) == pytest.approx(2.5 ** 0.5)
+    assert rmse([2.0, 2.0, 2.0]) == pytest.approx(2.0)
+    assert rmse([]) == 0.0
 
 
 def _rand_rot(rng):

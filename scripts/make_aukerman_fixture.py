@@ -66,20 +66,46 @@ def _dms(vals) -> float:
     return d + m / 60.0 + s / 3600.0
 
 
+def _ref_is_negative(ref, neg_letter: str) -> bool:
+    """True when a GPS*Ref value denotes the negative hemisphere.
+
+    Pillow returns these as 'S'/'W', b'W', 'W\\x00', ' w ', etc. — normalise.
+    """
+    if ref is None:
+        return False
+    if isinstance(ref, (bytes, bytearray)):
+        ref = ref.decode("ascii", "ignore")
+    return str(ref).strip().strip("\x00").upper()[:1] == neg_letter
+
+
+def _parse_gps(g: dict):
+    """(lat, lon, alt) from a {GPSTag: value} dict, applying hemisphere refs."""
+    if "GPSLatitude" not in g or "GPSLongitude" not in g:
+        return None
+    lat = _dms(g["GPSLatitude"])
+    lon = _dms(g["GPSLongitude"])
+    if _ref_is_negative(g.get("GPSLatitudeRef"), "S"):
+        lat = -lat
+    if _ref_is_negative(g.get("GPSLongitudeRef"), "W"):
+        lon = -lon
+    alt = _ratio(g.get("GPSAltitude", 0) or 0)
+    alt_ref = g.get("GPSAltitudeRef")
+    if alt_ref in (1, b"\x01") or (isinstance(alt_ref, (bytes, bytearray))
+                                   and alt_ref[:1] == b"\x01"):
+        alt = -alt
+    return lat, lon, alt
+
+
 def _read_meta(path: Path):
     ex = Image.open(path).getexif()
     dto = ex.get_ifd(0x8769).get(0x9003) or ex.get(0x0132)
     gps_raw = ex.get_ifd(0x8825)
     if not dto or not gps_raw:
         return None
-    g = {GPSTAGS.get(k, k): v for k, v in gps_raw.items()}
-    if "GPSLatitude" not in g or "GPSLongitude" not in g:
+    gps = _parse_gps({GPSTAGS.get(k, k): v for k, v in gps_raw.items()})
+    if gps is None:
         return None
-    lat = _dms(g["GPSLatitude"]) * (-1 if g.get("GPSLatitudeRef") == "S" else 1)
-    lon = _dms(g["GPSLongitude"]) * (-1 if g.get("GPSLongitudeRef") == "W" else 1)
-    alt = _ratio(g.get("GPSAltitude", 0) or 0)
-    if g.get("GPSAltitudeRef") in (1, b"\x01"):
-        alt = -alt
+    lat, lon, alt = gps
     t = datetime.strptime(str(dto).strip(), "%Y:%m:%d %H:%M:%S")
     return {"name": path.name, "path": path, "t": t, "lat": lat, "lon": lon, "alt": alt}
 

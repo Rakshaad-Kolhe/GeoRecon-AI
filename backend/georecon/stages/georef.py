@@ -32,6 +32,7 @@ from georecon.util.sim3 import (
     fit_plane_ransac,
     quat_wxyz_to_R,
     ransac_sim3,
+    rmse,
     umeyama,
 )
 
@@ -108,8 +109,8 @@ def holdout_rmse(branch, C, U, pts, view_dirs, cfg):
         dv.append(np.abs(res[:, 2]))
     if not dh:
         return float("nan"), float("nan")
-    dh, dv = np.concatenate(dh), np.concatenate(dv)
-    return float(np.sqrt(np.mean(dh ** 2))), float(np.sqrt(np.mean(dv ** 2)))
+    # pooled over every held-out frame (sequential blocks -> honest generalisation)
+    return rmse(np.concatenate(dh)), rmse(np.concatenate(dv))
 
 
 def scale_drift_pct(branch, C, U, pts, view_dirs, cfg, s_full):
@@ -213,13 +214,25 @@ def run(ctx: "StageContext") -> dict:
             s, R, t, inliers, _ = solve_sim3(C, U, cfg, cfg.seed)
 
     # ---- residuals + metrics -------------------------------------------
+    # rmse_h / rmse_v are over the RANSAC inliers (a rejected outlier must not
+    # dominate the headline fit quality); rmse_h_all + the resid_h_* percentiles
+    # keep the full picture visible.
     if len(C):
         res = apply(s, R, t, C) - U
-        rmse_h = float(np.sqrt(np.mean((res[:, :2] ** 2).sum(1))))
-        rmse_v = float(np.sqrt(np.mean(res[:, 2] ** 2)))
+        h_all = np.linalg.norm(res[:, :2], axis=1)
+        v_all = np.abs(res[:, 2])
+        sel = inliers.astype(bool)
+        if not sel.any():
+            sel = np.ones(len(res), bool)
+        rmse_h, rmse_v = rmse(h_all[sel]), rmse(v_all[sel])
+        rmse_h_all = rmse(h_all)
+        resid_h_median = float(np.median(h_all))
+        resid_h_p90 = float(np.percentile(h_all, 90))
+        resid_h_max = float(h_all.max())
     else:
         res = np.zeros((0, 3))
-        rmse_h = rmse_v = 0.0
+        rmse_h = rmse_v = rmse_h_all = 0.0
+        resid_h_median = resid_h_p90 = resid_h_max = 0.0
 
     hold_h = hold_v = drift = 0.0
     if georeferenced:
@@ -239,6 +252,10 @@ def run(ctx: "StageContext") -> dict:
         "scale": round(float(s), 6),
         "rmse_h": round(rmse_h, 4),
         "rmse_v": round(rmse_v, 4),
+        "rmse_h_all": round(rmse_h_all, 4),
+        "resid_h_median": round(resid_h_median, 4),
+        "resid_h_p90": round(resid_h_p90, 4),
+        "resid_h_max": round(resid_h_max, 4),
         "holdout_rmse_h": round(hold_h, 4),
         "holdout_rmse_v": round(hold_v, 4),
         "scale_drift_pct": round(drift, 3),
@@ -246,9 +263,9 @@ def run(ctx: "StageContext") -> dict:
         "track_length_m": round(track_len, 3),
         "seconds": round(time.time() - t0, 3),
     }
-    ctx.log.info("georef: branch=%s pairs=%d inliers=%d scale=%.4f rmse_h=%.2fm "
-                 "holdout_h=%.2fm drift=%.1f%%", branch, len(pairs), n_inl, s,
-                 rmse_h, hold_h, drift)
+    ctx.log.info("georef: branch=%s pairs=%d inliers=%d scale=%.4f "
+                 "rmse_h=%.2fm (all %.2fm) holdout_h=%.2fm drift=%.1f%%",
+                 branch, len(pairs), n_inl, s, rmse_h, rmse_h_all, hold_h, drift)
     if georeferenced and n_inl < 0.7 * len(pairs):
         ctx.warn(f"only {n_inl}/{len(pairs)} GPS pairs are inliers (<70%)")
     if georeferenced and np.isfinite(hold_h) and hold_h > 5.0:

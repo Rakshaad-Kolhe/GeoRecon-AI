@@ -15,7 +15,7 @@ from georecon.stages.georef import (
     solve_sim3,
 )
 from georecon.util.ply import write_ply
-from georecon.util.sim3 import apply
+from georecon.util.sim3 import apply, rmse
 
 
 def _rand_rot(rng):
@@ -60,6 +60,23 @@ def test_solve_sim3_recovers_scale_under_2m_gps_noise():
     ss, RR, tt, inl, _ = solve_sim3(C, U, cfg, seed=0)
     assert abs(ss - s) / s < 0.02
     assert inl.mean() > 0.8
+
+
+def test_rmse_h_reported_over_inliers_not_all_pairs():
+    rng = np.random.default_rng(3)
+    n = 40
+    C = rng.normal(size=(n, 3)) * np.array([30.0, 30.0, 5.0])
+    s, R, t = 2.0, _rand_rot(rng), np.array([1.0, 2.0, 3.0])
+    U = apply(s, R, t, C) + rng.normal(scale=0.5, size=(n, 3))
+    U[7] += np.array([120.0, 0.0, 0.0])                       # one gross GPS outlier
+    cfg = GeorefCfg(ransac_thr_m=5.0, ransac_iters=500)
+
+    ss, RR, tt, inl, _ = solve_sim3(C, U, cfg, seed=0)
+    h = np.linalg.norm((apply(ss, RR, tt, C) - U)[:, :2], axis=1)
+    assert not inl[7]
+    assert rmse(h[inl]) < 2.0            # headline rmse_h: outlier excluded
+    assert rmse(h) > 15.0               # rmse_h_all: outlier visible
+    assert h.max() > 100.0
 
 
 def test_solve_collinear_levels_tilted_ground_and_recovers_scale():
