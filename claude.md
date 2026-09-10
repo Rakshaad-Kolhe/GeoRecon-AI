@@ -15,9 +15,11 @@ and a web viewer with distance / area / height measurement.
 
 ## Stack — do not add dependencies without asking
 
-- Backend: Python 3.11, FastAPI, uvicorn, pydantic-settings
-- SfM / MVS: **<FILL IN: `pycolmap-cuda12` (Linux/WSL2/Colab) OR `colmap` 4.x CLI (Windows CUDA build)>**
-- CV / 3D: OpenCV, NumPy, SciPy, Open3D, trimesh
+- Backend: Python 3.13, FastAPI, uvicorn, pydantic-settings
+- SfM / MVS: `pycolmap` 4.2 (CPU wheel) + COLMAP 4.2 CUDA CLI (`GEORECON_COLMAP_BIN`)
+  for GPU SIFT/matching and dense; Poisson via COLMAP `poisson_mesher`
+- CV / 3D: OpenCV, NumPy, SciPy; mesh ops via trimesh + fast-simplification
+  (no Open3D — no cp313 wheel)
 - Geo: pyproj, laspy, rasterio
 - AI: ultralytics (YOLO segmentation) for dynamic-object masks
 - Frontend: React + Vite + TypeScript, @react-three/fiber + drei, three.js

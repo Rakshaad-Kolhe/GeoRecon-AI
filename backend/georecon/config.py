@@ -37,13 +37,20 @@ class Preset:
     mvs_num_src_images: int = 8
     mvs_window_radius: int = 4
     mvs_num_iterations: int = 4
+    mvs_ref_stride: int = 1
+    # mesh (see MeshCfg)
+    poisson_depth: int = 9
+    mesh_max_tris: int = 200_000
 
 
 PRESETS: dict[str, Preset] = {
-    "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=800),
-    "balanced": Preset(max_keyframes=300, frame_long_side=1600, mvs_max_image_size=1200),
+    "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=800,
+                   mvs_ref_stride=2),
+    "balanced": Preset(max_keyframes=300, frame_long_side=1600, mvs_max_image_size=1200,
+                       poisson_depth=10, mesh_max_tris=400_000),
     "accurate": Preset(max_keyframes=600, frame_long_side=2000, mvs_max_image_size=1600,
-                       mvs_num_src_images=12, mvs_window_radius=5, mvs_num_iterations=5),
+                       mvs_num_src_images=12, mvs_window_radius=5, mvs_num_iterations=5,
+                       poisson_depth=11, mesh_max_tris=800_000),
 }
 
 
@@ -117,6 +124,21 @@ class DenseCfg(BaseModel):
     num_src_images: int = 8      # image_undistorter --num_patch_match_src_images
     window_radius: int = 4       # PatchMatchStereo.window_radius
     num_iterations: int = 4      # PatchMatchStereo.num_iterations
+    ref_stride: int = 1          # compute a depth map for every Nth keyframe only
+
+
+class MeshCfg(BaseModel):
+    """Meshing tuning. Defaults match ``fast``; presets widen depth / tri budget.
+    An explicit override here wins over the preset."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: str = "auto"        # "auto" | "poisson" | "heightfield"
+    poisson_depth: int = 9      # PoissonMeshing.depth
+    poisson_trim: int = 7       # PoissonMeshing.trim
+    max_tris: int = 200_000     # decimation target
+    min_points_for_poisson: int = 50_000
+    max_seconds: float = 300.0  # poisson over this -> heightfield fallback
 
 
 class JobConfig(BaseModel):
@@ -136,6 +158,7 @@ class JobConfig(BaseModel):
     sfm: SfmCfg = SfmCfg()
     georef: GeorefCfg = GeorefCfg()
     dense: DenseCfg = DenseCfg()
+    mesh: MeshCfg = MeshCfg()
 
     @property
     def resolved_preset(self) -> Preset:
@@ -153,7 +176,16 @@ class JobConfig(BaseModel):
             return self.dense
         return DenseCfg(num_src_images=p.mvs_num_src_images,
                         window_radius=p.mvs_window_radius,
-                        num_iterations=p.mvs_num_iterations)
+                        num_iterations=p.mvs_num_iterations,
+                        ref_stride=p.mvs_ref_stride)
+
+    @property
+    def resolved_mesh(self) -> MeshCfg:
+        """Preset mesh knobs unless the job overrode ``mesh`` explicitly."""
+        p = self.resolved_preset
+        if self.mesh != MeshCfg():
+            return self.mesh
+        return MeshCfg(poisson_depth=p.poisson_depth, max_tris=p.mesh_max_tris)
 
     def to_json(self, job_dir) -> Path:
         path = Path(job_dir) / "config.json"

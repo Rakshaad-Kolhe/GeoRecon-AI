@@ -55,15 +55,37 @@ def _write_clean_model(sfm_model: Path, outliers: list[str], out_dir: Path) -> l
     return excluded
 
 
-def _rewrite_patchmatch_cfg(cfg_path: Path, num_src: int) -> int:
+def _rewrite_patchmatch_cfg(cfg_path: Path, num_src: int, ref_stride: int = 1) -> int:
     """COLMAP writes patch-match.cfg as alternating <ref-image> / <source-spec>
-    lines. Pin every source spec to ``__auto__, <num_src>``. Returns the ref
-    count."""
+    lines. Returns the reference count.
+
+    ``ref_stride == 1``: keep every image as a reference and pin its sources to
+    ``__auto__, <num_src>`` (auto-picked from all images — safe because every
+    image also has a depth map).
+
+    ``ref_stride > 1``: compute a depth map only for every Nth image. Sources
+    must then be listed explicitly from the *kept* set — ``__auto__`` would pick
+    images with no depth map and ``patch_match_stereo --geom_consistency`` would
+    crash reading the missing ``.photometric.bin``. Each kept ref gets its
+    ``num_src`` nearest kept neighbours by sequence position.
+    """
     lines = [ln for ln in cfg_path.read_text().splitlines() if ln.strip()]
-    for i in range(1, len(lines), 2):
-        lines[i] = f"__auto__, {num_src}"
-    cfg_path.write_text("\n".join(lines) + "\n")
-    return (len(lines) + 1) // 2
+    refs = lines[0::2]
+    stride = max(1, ref_stride)
+    kept = refs[::stride]
+    out: list[str] = []
+    if stride == 1:
+        for name in kept:
+            out += [name, f"__auto__, {num_src}"]
+    else:
+        w = max(1, num_src // 2)
+        for i, name in enumerate(kept):
+            src = kept[max(0, i - w):i] + kept[i + 1:i + 1 + w]
+            src = (src + kept[:num_src])[:num_src]          # pad if near the ends
+            src = [s for s in dict.fromkeys(src) if s != name]
+            out += [name, ", ".join(src)]
+    cfg_path.write_text("\n".join(out) + "\n")
+    return len(out) // 2
 
 
 def _transform_cloud(d: dict, s: float, R: np.ndarray, t: np.ndarray) -> dict:
@@ -146,7 +168,8 @@ def run(ctx: "StageContext") -> dict:
     undistort_s = perf_counter() - t0
 
     pm_cfg = ws / "stereo" / "patch-match.cfg"
-    n_ref = _rewrite_patchmatch_cfg(pm_cfg, dcfg.num_src_images) if pm_cfg.exists() else 0
+    n_ref = (_rewrite_patchmatch_cfg(pm_cfg, dcfg.num_src_images, dcfg.ref_stride)
+             if pm_cfg.exists() else 0)
 
     def _stereo(size: int) -> None:
         colmap_cli.run("patch_match_stereo", {
@@ -202,6 +225,8 @@ def run(ctx: "StageContext") -> dict:
         "num_src_images": dcfg.num_src_images,
         "window_radius": dcfg.window_radius,
         "num_iterations": dcfg.num_iterations,
+        "ref_stride": dcfg.ref_stride,
+        "ref_images": n_ref,
         "max_image_size_used": max_size,
         "retried": retried,
         "mean_views": round(mean_views, 3),

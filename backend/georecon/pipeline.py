@@ -20,6 +20,7 @@ from georecon.stages import masking as _masking_stage
 from georecon.stages import sfm as _sfm_stage
 from georecon.stages import georef as _georef_stage
 from georecon.stages import dense as _dense_stage
+from georecon.stages import mesh as _mesh_stage
 
 # Ordered stage registry. Later PRs append their stages here.
 STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
@@ -29,6 +30,7 @@ STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
     ("sfm", _sfm_stage.run),
     ("georef", _georef_stage.run),
     ("dense", _dense_stage.run),
+    ("mesh", _mesh_stage.run),
 ]
 
 
@@ -68,6 +70,9 @@ class JobPaths:
     georef_origin: Path
     dense: Path
     dense_fused: Path
+    mesh: Path
+    mesh_ply: Path
+    mesh_preview: Path
     outputs: Path
     outputs_web: Path
     report: Path
@@ -93,6 +98,9 @@ class JobPaths:
             georef_origin=r / "georef" / "origin.json",
             dense=r / "dense",
             dense_fused=r / "dense" / "fused.ply",
+            mesh=r / "mesh",
+            mesh_ply=r / "mesh" / "mesh.ply",
+            mesh_preview=r / "report" / "mesh_preview.png",
             outputs=r / "outputs",
             outputs_web=r / "outputs" / "web",
             report=r / "report",
@@ -105,7 +113,7 @@ class JobPaths:
     def ensure(self) -> "JobPaths":
         for d in (
             self.input, self.frames, self.masks, self.sfm, self.sfm_sparse,
-            self.georef, self.dense, self.outputs, self.outputs_web,
+            self.georef, self.dense, self.mesh, self.outputs, self.outputs_web,
             self.report, self.stages_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
