@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +38,21 @@ PRESETS: dict[str, Preset] = {
 }
 
 
+class KeyframeCfg(BaseModel):
+    """Keyframe-selection tuning. ``flow_frac`` is a fraction of the diagonal
+    of the 640px-wide analysis frame (the actual pixel threshold is derived
+    by the stage)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    analysis_fps: int = 10
+    blur_ratio: float = 0.6
+    blur_window: int = 31
+    flow_frac: float = 0.10
+    min_gps_move_m: float = 0.5
+    jpeg_quality: int = 95
+
+
 class JobConfig(BaseModel):
     """Per-job configuration, serialised to ``<job_dir>/config.json``."""
 
@@ -48,6 +63,9 @@ class JobConfig(BaseModel):
     # Source media, resolved to absolute paths by the CLI / API.
     video_path: str = ""
     telemetry_path: Optional[str] = None
+    # telemetry_t = video_t + telemetry_offset_s (applied when sampling telemetry).
+    telemetry_offset_s: float = 0.0
+    keyframes: KeyframeCfg = KeyframeCfg()
 
     @property
     def resolved_preset(self) -> Preset:

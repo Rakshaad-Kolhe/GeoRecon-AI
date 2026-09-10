@@ -75,13 +75,14 @@ def run(ctx: "StageContext") -> dict:
         df = load_telemetry(dst_tel)
         df.to_csv(paths.input / "telemetry_norm.csv", index=False)
         stats = telemetry_stats(df)
+        t0_rule = df.attrs.get("t0_rule", "first_sample")
 
         vid_span = probe["duration_s"]
         overlap = max(0.0, min(stats["t_end"], vid_span) - max(stats["t_start"], 0.0))
         coverage = overlap / vid_span if vid_span > 0 else 0.0
-        metrics["telemetry"] = {**stats, "coverage": round(coverage, 4)}
-        ctx.log.info("telemetry %d rows @ %.3f Hz, coverage %.1f%%",
-                     stats["rows"], stats["hz"], coverage * 100)
+        metrics["telemetry"] = {**stats, "coverage": round(coverage, 4), "t0_rule": t0_rule}
+        ctx.log.info("telemetry %d rows @ %.3f Hz, coverage %.1f%%, t0=%s",
+                     stats["rows"], stats["hz"], coverage * 100, t0_rule)
         if coverage < 0.9:
             ctx.warn(f"telemetry covers only {coverage:.0%} of the video span")
     else:
