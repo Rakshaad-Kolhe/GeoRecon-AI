@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -71,6 +71,20 @@ class MaskCfg(BaseModel):
     max_masked_warn: float = 0.5
 
 
+class SfmCfg(BaseModel):
+    """Structure-from-Motion (pycolmap) tuning."""
+
+    model_config = ConfigDict(frozen=True)
+
+    camera_model: str = "SIMPLE_RADIAL"
+    max_features: int = 8192
+    seq_overlap: int = 12
+    quadratic_overlap: bool = True
+    mapper: str = "global"            # "global" (GLOMAP) | "incremental"
+    min_model_size: int = 6
+    use_gpu: Union[bool, str] = "auto"   # "auto" | true | false
+
+
 class JobConfig(BaseModel):
     """Per-job configuration, serialised to ``<job_dir>/config.json``."""
 
@@ -85,6 +99,7 @@ class JobConfig(BaseModel):
     telemetry_offset_s: float = 0.0
     keyframes: KeyframeCfg = KeyframeCfg()
     masking: MaskCfg = MaskCfg()
+    sfm: SfmCfg = SfmCfg()
 
     @property
     def resolved_preset(self) -> Preset:

@@ -19,11 +19,47 @@ def _compact(path: Path) -> str:
     return json.dumps(json.loads(path.read_text(encoding="utf-8")), separators=(",", ":"))
 
 
+def parse_set_overrides(items) -> dict:
+    """``["sfm.seq_overlap=20", "preset=accurate"]`` -> nested dict.
+
+    Each value is JSON-parsed, falling back to the raw string.
+    """
+    out: dict = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"--set expects KEY=VALUE, got {item!r}")
+        key, raw = item.split("=", 1)
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+        node = out
+        parts = [p for p in key.split(".") if p]
+        if not parts:
+            raise ValueError(f"--set has an empty key: {item!r}")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise ValueError(f"--set path conflict at {part!r} in {item!r}")
+        node[parts[-1]] = value
+    return out
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     job_dir = _job_dir(a.job)
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg = JobConfig(
+    base = dict(
         preset=a.preset,
         mask_dynamic=a.mask_dynamic,
         hfov_deg=a.hfov,
@@ -32,6 +68,12 @@ def cmd_run(a: argparse.Namespace) -> int:
         telemetry_path=str(Path(a.telemetry).resolve()) if a.telemetry else None,
         telemetry_offset_s=a.telemetry_offset,
     )
+    try:
+        merged = _deep_merge(base, parse_set_overrides(a.set))
+        cfg = JobConfig(**merged)
+    except (ValueError, TypeError) as exc:
+        print(f"[FAILED] bad --set override: {exc}")
+        return 1
     cfg.to_json(job_dir)
 
     try:
@@ -79,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seconds to add to video time when sampling telemetry")
     r.add_argument("--force-from", dest="force_from", default=None,
                    help="rerun this stage and every later one")
+    r.add_argument("--set", dest="set", action="append", default=[], metavar="KEY=VALUE",
+                   help="override any JobConfig field, e.g. --set sfm.seq_overlap=20 "
+                        "(repeatable; value is JSON-parsed)")
     r.set_defaults(func=cmd_run, mask_dynamic=True)
 
     s = sub.add_parser("status", help="print status.json + metrics.json for a job")
