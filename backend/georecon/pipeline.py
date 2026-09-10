@@ -15,10 +15,12 @@ from typing import Callable
 
 from georecon.config import JobConfig, Preset
 from georecon.stages import ingest as _ingest_stage
+from georecon.stages import keyframes as _keyframes_stage
 
 # Ordered stage registry. Later PRs append their stages here.
 STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
     ("ingest", _ingest_stage.run),
+    ("keyframes", _keyframes_stage.run),
 ]
 
 

@@ -1,74 +1,42 @@
 import json
 
-import cv2
-import numpy as np
 import pytest
 
 from georecon import pipeline
 from georecon.config import JobConfig
-
-FPS = 10
-N_FRAMES = 20  # -> 2.0 s
-W, H = 160, 120
-
-SRT = """1
-00:00:00,000 --> 00:00:01,000
-[latitude: 18.5204] [longitude: 73.8567] [rel_alt: 50.0 abs_alt: 610.0]
-
-2
-00:00:01,000 --> 00:00:02,000
-[latitude: 18.5210] [longitude: 73.8572] [rel_alt: 51.0 abs_alt: 611.0]
-
-3
-00:00:02,000 --> 00:00:03,000
-[latitude: 18.5216] [longitude: 73.8577] [rel_alt: 52.0 abs_alt: 612.0]
-"""
+from georecon.stages import ingest as ingest_stage
 
 
-def _make_video(path):
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    vw = cv2.VideoWriter(str(path), fourcc, FPS, (W, H))
-    if not vw.isOpened():
-        pytest.skip("no mp4v encoder available in this OpenCV build")
-    rng = np.random.default_rng(0)
-    for _ in range(N_FRAMES):
-        vw.write(rng.integers(0, 255, (H, W, 3), dtype=np.uint8))
-    vw.release()
-    if not path.exists() or path.stat().st_size == 0:
-        pytest.skip("mp4v encoder produced no output")
+@pytest.fixture(autouse=True)
+def _ingest_only(monkeypatch):
+    """Keep these tests scoped to the ingest stage."""
+    monkeypatch.setattr(pipeline, "STAGES", [("ingest", ingest_stage.run)])
 
 
-def test_ingest_probe_and_coverage(tmp_path):
-    video = tmp_path / "clip.mp4"
-    _make_video(video)
-    srt = tmp_path / "clip.srt"
-    srt.write_text(SRT, encoding="utf-8")
-
+def test_ingest_probe_and_coverage(tmp_path, synth_clip):
+    video, srt = synth_clip(seconds=6.0, fps=20, w=640, h=360)
     job_dir = tmp_path / "job"
-    cfg = JobConfig(video_path=str(video), telemetry_path=str(srt))
-    state = pipeline.run_job(job_dir, cfg)
+    state = pipeline.run_job(job_dir, JobConfig(video_path=str(video),
+                                               telemetry_path=str(srt)))
     assert state["state"] == "done"
 
-    metrics = json.loads((job_dir / "report" / "metrics.json").read_text(encoding="utf-8"))
-    ing = metrics["stages"]["ingest"]
-    assert ing["video"]["width"] == W
-    assert ing["video"]["height"] == H
-    assert ing["video"]["fps"] == pytest.approx(FPS, abs=0.5)
-    assert ing["video"]["frame_count"] == N_FRAMES
-    assert ing["video"]["duration_s"] == pytest.approx(2.0, abs=0.25)
+    ing = json.loads((job_dir / "report" / "metrics.json").read_text("utf-8"))["stages"]["ingest"]
+    assert ing["video"]["width"] == 640
+    assert ing["video"]["height"] == 360
+    assert ing["video"]["fps"] == pytest.approx(20, abs=1)
+    assert ing["video"]["frame_count"] == pytest.approx(120, abs=3)
+    assert ing["video"]["duration_s"] == pytest.approx(6.0, abs=0.3)
     assert ing["telemetry"]["coverage"] == pytest.approx(1.0, abs=0.05)
-    assert ing["telemetry"]["rows"] == 3
+    assert ing["telemetry"]["t0_rule"] == "srt_timestamp"
 
-    # media copied into the workspace
     assert (job_dir / "input" / "video.mp4").exists()
     assert (job_dir / "input" / "telemetry.srt").exists()
     assert (job_dir / "input" / "telemetry_norm.csv").exists()
-    assert not state["warnings"]  # full coverage -> no warning
+    assert not state["warnings"]
 
 
-def test_ingest_without_telemetry_warns(tmp_path):
-    video = tmp_path / "clip.mp4"
-    _make_video(video)
+def test_ingest_without_telemetry_warns(tmp_path, synth_clip):
+    video, _ = synth_clip(with_srt=False)
     job_dir = tmp_path / "job"
     state = pipeline.run_job(job_dir, JobConfig(video_path=str(video)))
     assert state["state"] == "done"

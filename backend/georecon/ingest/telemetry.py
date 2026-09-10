@@ -35,10 +35,23 @@ def load_telemetry(path) -> pd.DataFrame:
         raise ValueError(
             f"unsupported telemetry extension {ext!r} for {p.name} (expected .srt or .csv)"
         )
+    t0_rule = df.attrs.get("t0_rule", "first_sample")
     df = _clean(df)
     if df.empty:
         raise ValueError(f"no usable telemetry rows parsed from {p.name}")
-    return df.sort_values("t").reset_index(drop=True)
+    df = df.sort_values("t").reset_index(drop=True)
+    df.attrs["t0_rule"] = t0_rule
+    return df
+
+
+def sample_at_video_time(df: pd.DataFrame, video_t, offset_s: float = 0.0):
+    """Interpolate telemetry at video timestamps ``video_t``.
+
+    The only place the telemetry offset is applied: ``telemetry_t = video_t + offset_s``.
+    Returns ``(lat, lon, alt, out_of_range_mask)`` like :func:`interpolate`.
+    """
+    tel_t = np.asarray(video_t, dtype=float) + float(offset_s)
+    return interpolate(df, tel_t)
 
 
 def interpolate(df: pd.DataFrame, t: np.ndarray):
@@ -129,7 +142,9 @@ def _parse_srt(p: Path) -> pd.DataFrame:
             "alt": np.nan if alt is None else alt,
             "rel_alt": np.nan if rel_alt is None else rel_alt,
         })
-    return pd.DataFrame(rows, columns=["t", "lat", "lon", "alt", "rel_alt"])
+    df = pd.DataFrame(rows, columns=["t", "lat", "lon", "alt", "rel_alt"])
+    df.attrs["t0_rule"] = "srt_timestamp"
+    return df
 
 
 # --------------------------------------------------------------------------- #
@@ -139,6 +154,18 @@ _TIME_KEYS = ["t", "time", "time_s", "seconds", "elapsed", "timestamp", "time(mi
 _LAT_KEYS = ["lat", "latitude"]
 _LON_KEYS = ["lon", "lng", "long", "longitude"]
 _ALT_KEYS = ["alt", "altitude", "abs_alt", "altitude_above_sealevel(feet)"]
+_VIDEO_KEYS = {"isvideo", "is_video", "recording"}
+
+
+def _truthy(v) -> bool:
+    if v is None or (isinstance(v, float) and v != v):
+        return False
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "y", "t"}
+    try:
+        return float(v) != 0.0
+    except (TypeError, ValueError):
+        return bool(v)
 
 
 def _find_col(lower_map: dict, keys: list[str]):
@@ -185,6 +212,19 @@ def _parse_csv(p: Path) -> pd.DataFrame:
         out["alt"] = alt
     else:
         out["alt"] = np.nan
+
+    # If a recording flag is present, put t=0 at the first "recording on" row
+    # and drop everything before it.
+    video_col = next((orig for low, orig in lower.items() if low in _VIDEO_KEYS), None)
+    t0_rule = "first_sample"
+    if video_col is not None:
+        rec = df[video_col].map(_truthy).to_numpy()
+        if rec.any():
+            first = int(rec.argmax())
+            out = out.iloc[first:].reset_index(drop=True)
+            out["t"] = out["t"] - out["t"].iloc[0]
+            t0_rule = "isvideo_column"
+    out.attrs["t0_rule"] = t0_rule
     return out
 
 

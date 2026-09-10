@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from georecon.ingest.telemetry import interpolate, load_telemetry, telemetry_stats
+from georecon.ingest.telemetry import (
+    interpolate,
+    load_telemetry,
+    sample_at_video_time,
+    telemetry_stats,
+)
 
 SRT_A = """1
 00:00:00,000 --> 00:00:01,000
@@ -105,3 +110,32 @@ def test_telemetry_stats(tmp_path):
     df = load_telemetry(_write(tmp_path, "a.srt", SRT_A))
     st = telemetry_stats(df)
     assert st == {"rows": 2, "hz": pytest.approx(1.0), "t_start": 0.0, "t_end": 1.0}
+
+
+def test_csv_isvideo_column_rebases_t0(tmp_path):
+    csv = (
+        "time_s,latitude,longitude,altitude,recording\n"
+        "0,18.5200,73.8500,600,0\n"
+        "1,18.5200,73.8500,600,0\n"
+        "2,18.5210,73.8510,601,1\n"
+        "3,18.5220,73.8520,602,1\n"
+    )
+    df = load_telemetry(_write(tmp_path, "rec.csv", csv))
+    assert list(df["t"]) == [0.0, 1.0]
+    assert df["lat"].iloc[0] == pytest.approx(18.5210)
+    assert df.attrs["t0_rule"] == "isvideo_column"
+
+
+def test_csv_without_isvideo_keeps_first_sample_rule(tmp_path):
+    csv = "time,latitude,longitude,altitude\n0,18.52,73.85,600\n1,18.53,73.86,601\n"
+    df = load_telemetry(_write(tmp_path, "p.csv", csv))
+    assert df.attrs["t0_rule"] == "first_sample"
+
+
+def test_sample_at_video_time_applies_offset(tmp_path):
+    df = load_telemetry(_write(tmp_path, "a.srt", SRT_A))  # samples at t=0 and t=1
+    lat0, _, _, oob0 = sample_at_video_time(df, np.array([0.0]), offset_s=0.0)
+    lat1, _, _, oob1 = sample_at_video_time(df, np.array([0.0]), offset_s=1.0)
+    assert lat0[0] == pytest.approx(df["lat"].iloc[0])
+    assert lat1[0] == pytest.approx(df["lat"].iloc[1])
+    assert not oob1[0]

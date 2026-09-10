@@ -30,6 +30,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         force_from=a.force_from,
         video_path=str(Path(a.video).resolve()),
         telemetry_path=str(Path(a.telemetry).resolve()) if a.telemetry else None,
+        telemetry_offset_s=a.telemetry_offset,
     )
     cfg.to_json(job_dir)
 
@@ -74,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-mask", dest="mask_dynamic", action="store_false",
                    help="disable dynamic-object masking")
     r.add_argument("--hfov", type=float, default=None, help="horizontal FOV in degrees")
+    r.add_argument("--telemetry-offset", dest="telemetry_offset", type=float, default=0.0,
+                   help="seconds to add to video time when sampling telemetry")
     r.add_argument("--force-from", dest="force_from", default=None,
                    help="rerun this stage and every later one")
     r.set_defaults(func=cmd_run, mask_dynamic=True)
