@@ -137,8 +137,9 @@ export function SceneCanvas({
         state.camera.up.set(0, 0, 1)
       }}
     >
-      <hemisphereLight args={[0xffffff, 0x30323a, 1.1]} />
-      <directionalLight position={[diag, -diag, diag * 1.5]} intensity={1.3} />
+      <ambientLight intensity={0.55} />
+      <hemisphereLight args={[0xffffff, 0x384049, 1.35]} />
+      <directionalLight position={[diag, -diag, diag * 1.5]} intensity={1.4} />
 
       <RaycasterConfig threshold={pointThreshold} />
       <SceneInfoReporter onSceneInfo={onSceneInfo} />

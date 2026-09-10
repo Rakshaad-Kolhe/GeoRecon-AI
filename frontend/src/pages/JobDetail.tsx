@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
@@ -13,6 +13,7 @@ import { elapsedSeconds, formatSeconds } from '../lib/format'
 export function JobDetail() {
   const { id } = useParams<{ id: string }>()
   const logRef = useRef<HTMLDivElement>(null)
+  const qc = useQueryClient()
 
   const { data: job, error, isLoading } = useQuery({
     queryKey: ['job', id],
@@ -21,6 +22,14 @@ export function JobDetail() {
     refetchInterval: (q) => {
       const st = q.state.data?.state
       return st === 'queued' || st === 'running' ? 1500 : false
+    },
+  })
+
+  const cancelMut = useMutation({
+    mutationFn: () => api.cancelJob(id as string),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['job', id] })
+      void qc.invalidateQueries({ queryKey: ['jobs'] })
     },
   })
 
@@ -60,6 +69,20 @@ export function JobDetail() {
           <span className="rounded border border-slate-800 px-2 py-0.5 text-xs text-slate-400">
             {job.preset}
           </span>
+        )}
+        {active && (
+          <button
+            type="button"
+            disabled={cancelMut.isPending}
+            onClick={() => {
+              if (window.confirm('Cancel this job? Any completed stages are kept.')) {
+                cancelMut.mutate()
+              }
+            }}
+            className="ml-auto rounded border border-red-500/50 px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+          >
+            {cancelMut.isPending ? 'cancelling…' : 'Cancel'}
+          </button>
         )}
       </div>
 

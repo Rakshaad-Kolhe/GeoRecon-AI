@@ -60,6 +60,53 @@ export interface CreateJobInput {
   telemetry_offset_s: number
 }
 
+// GET /api/health (backend feat/10-api).
+export interface HealthInfo {
+  torch_cuda: boolean
+  gpu_name: string
+  colmap: { available: boolean; version: string; cuda: boolean }
+  pycolmap_version: string
+  queue_len: number
+  running_job: string | null
+}
+
+// GET /api/jobs/{id}/files — paths relative to outputs/.
+export interface FileEntry {
+  path: string
+  bytes: number
+}
+
+// metrics.stages.validate.summary (backend validate stage).
+export interface ValidateSummary {
+  accuracy: {
+    branch?: string
+    rmse_h?: number
+    rmse_v?: number
+    holdout_rmse_h?: number
+    holdout_rmse_v?: number
+    inliers?: number
+    pairs?: number
+    excluded_images?: number
+    scale_drift_pct?: number
+    mean_reproj_px?: number
+  }
+  completeness: {
+    registered_pct?: number
+    dense_points?: number
+    points_per_m2?: number
+    coverage_pct?: number
+    mesh_surface_area_m2?: number
+  }
+  speed: {
+    per_stage_s?: Record<string, number>
+    total_seconds?: number
+    video_duration_s?: number
+    keyframes?: number
+    kf10?: number
+    projected_10min_s?: number
+  }
+}
+
 // web/meta.json emitted by backend PR 08 alongside the downsampled web assets.
 // Scene is local ENU in metres, +Z up.
 export interface ViewerMeta {

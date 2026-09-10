@@ -1,22 +1,13 @@
 import { useState } from 'react'
 import type { JobDetail } from '../api/types'
+import { DownloadsPanel } from './DownloadsPanel'
 import { MetricsPanel } from './MetricsPanel'
 import { Panel } from './Panel'
+import { MapPanel } from './viewer/MapPanel'
 import { ViewerHost } from './viewer/ViewerHost'
 
 const TABS = ['3D', 'Measure', 'Map', 'Metrics', 'Downloads'] as const
 type Tab = (typeof TABS)[number]
-
-const DOWNLOADS = [
-  'outputs/pointcloud.ply',
-  'outputs/pointcloud.las',
-  'outputs/mesh.obj',
-  'outputs/model.glb',
-  'outputs/dsm.tif',
-  'outputs/color.tif',
-  'outputs/trajectory.geojson',
-  'report/metrics.json',
-]
 
 export function ResultsTabs({ job }: { job: JobDetail }) {
   const [tab, setTab] = useState<Tab>('Metrics')
@@ -66,26 +57,8 @@ export function ResultsTabs({ job }: { job: JobDetail }) {
           )}
 
           {tab === 'Metrics' && <MetricsPanel metrics={job.metrics} />}
-
-          {tab === 'Downloads' && (
-            <ul className="space-y-1 font-mono text-xs text-slate-400">
-              {DOWNLOADS.map((f) => (
-                <li
-                  key={f}
-                  className="flex justify-between rounded border border-slate-800 px-2 py-1"
-                >
-                  <span>{f}</span>
-                  <span className="text-slate-600">stub</span>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {tab === 'Map' && (
-            <div className="flex h-40 items-center justify-center rounded border border-dashed border-slate-800 text-sm text-slate-600">
-              Map viewer — PR 13
-            </div>
-          )}
+          {tab === 'Map' && <MapPanel jobId={job.job_id} />}
+          {tab === 'Downloads' && <DownloadsPanel jobId={job.job_id} />}
         </>
       )}
     </Panel>

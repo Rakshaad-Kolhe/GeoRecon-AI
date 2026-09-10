@@ -1,18 +1,30 @@
-import type { CreateJobInput, JobDetail, JobStatus, ViewerMeta } from './types'
+import type {
+  CreateJobInput,
+  FileEntry,
+  HealthInfo,
+  JobDetail,
+  JobStatus,
+  ViewerMeta,
+} from './types'
 import { mockApi } from './mock'
 
 export interface Api {
+  getHealth(): Promise<HealthInfo>
   listJobs(): Promise<JobStatus[]>
   getJob(id: string): Promise<JobDetail>
   createJob(
     input: CreateJobInput,
     onUploadProgress?: (fraction: number) => void,
   ): Promise<{ job_id: string }>
+  cancelJob(id: string): Promise<void>
   getLog(id: string, tail?: number): Promise<string>
+  getFiles(id: string): Promise<FileEntry[]>
   /** Load web/meta.json; mocks synthesise a procedural site when no files exist. */
   prepareViewer(jobId: string): Promise<ViewerMeta>
-  /** Resolve a served path under a job's outputs/ or report/ (or web/) to a URL. */
+  /** URL for a file under a job's outputs/ (path relative to outputs/). */
   fileUrl(jobId: string, path: string): string
+  /** URL for a file under a job's report/. */
+  reportUrl(jobId: string, path: string): string
 }
 
 export class ApiError extends Error {
@@ -38,13 +50,19 @@ async function j<T>(res: Response): Promise<T> {
   return (await res.json()) as T
 }
 
+const jobPath = (id: string) => `/api/jobs/${encodeURIComponent(id)}`
+
 const realApi: Api = {
+  async getHealth() {
+    return j<HealthInfo>(await fetch('/api/health'))
+  },
+
   async listJobs() {
     return j<JobStatus[]>(await fetch('/api/jobs'))
   },
 
   async getJob(id) {
-    return j<JobDetail>(await fetch(`/api/jobs/${encodeURIComponent(id)}`))
+    return j<JobDetail>(await fetch(jobPath(id)))
   },
 
   createJob(input, onUploadProgress) {
@@ -80,25 +98,36 @@ const realApi: Api = {
     })
   },
 
+  async cancelJob(id) {
+    const res = await fetch(`${jobPath(id)}/cancel`, { method: 'POST' })
+    if (!res.ok) throw new ApiError(res.status, res.statusText || 'cancel failed')
+  },
+
   async getLog(id, tail = 200) {
-    const res = await fetch(
-      `/api/jobs/${encodeURIComponent(id)}/log?tail=${tail}`,
-    )
+    const res = await fetch(`${jobPath(id)}/log?tail=${tail}`)
     if (!res.ok) throw new ApiError(res.status, res.statusText)
     return res.text()
   },
 
+  async getFiles(id) {
+    return j<FileEntry[]>(await fetch(`${jobPath(id)}/files`))
+  },
+
   async prepareViewer(id) {
-    return j<ViewerMeta>(
-      await fetch(`/api/jobs/${encodeURIComponent(id)}/files/web/meta.json`),
-    )
+    return j<ViewerMeta>(await fetch(`${jobPath(id)}/files/web/meta.json`))
   },
 
   fileUrl(id, path) {
-    return `/api/jobs/${encodeURIComponent(id)}/files/${path.replace(/^\/+/, '')}`
+    return `${jobPath(id)}/files/${path.replace(/^\/+/, '')}`
+  },
+
+  reportUrl(id, path) {
+    return `${jobPath(id)}/report/${path.replace(/^\/+/, '')}`
   },
 }
 
+// default "1" in .env.development, "0" in .env.production; `npm run dev:real`
+// runs with --mode real (.env.real sets it to "0").
 export const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === '1'
 
 export const api: Api = USE_MOCKS ? mockApi : realApi
