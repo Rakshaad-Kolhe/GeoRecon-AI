@@ -18,8 +18,8 @@ pillow
 numpy
 pandas
 scipy
-open3d
-trimesh
+trimesh                 # mesh cleanup ops (no open3d — no cp313 wheel)
+fast-simplification     # quadric decimation
 
 # Geo
 pyproj          # WGS84 <-> ECEF/ENU, UTM

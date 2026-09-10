@@ -61,6 +61,21 @@ def test_rewrite_patchmatch_cfg_pins_every_source_spec(tmp_path):
     assert set(lines[1::2]) == {"__auto__, 8"}
 
 
+def test_rewrite_patchmatch_cfg_ref_stride_explicit_sources_from_kept(tmp_path):
+    cfg = tmp_path / "patch-match.cfg"
+    names = [f"f_{i}.jpg" for i in range(6)]
+    cfg.write_text("".join(f"{n}\n__auto__, 20\n" for n in names))
+    n_ref = _rewrite_patchmatch_cfg(cfg, 8, ref_stride=2)
+    lines = cfg.read_text().splitlines()
+    kept = {"f_0.jpg", "f_2.jpg", "f_4.jpg"}
+    assert n_ref == 3
+    assert lines[0::2] == ["f_0.jpg", "f_2.jpg", "f_4.jpg"]
+    for ref, src in zip(lines[0::2], lines[1::2]):
+        srcs = [s.strip() for s in src.split(",")]
+        assert "__auto__" not in src                     # explicit, not auto
+        assert set(srcs) <= kept and ref not in srcs      # sources are kept refs
+
+
 def test_georef_outliers_reads_inlier_zero(tmp_path):
     csvp = tmp_path / "residuals.csv"
     csvp.write_text("name,dE,dN,dU,inlier\n"
@@ -110,9 +125,9 @@ def test_write_clean_model_deregisters_named_outliers(tmp_path, monkeypatch):
 
 def test_resolved_dense_preset_override_and_explicit():
     assert JobConfig(preset="fast").resolved_dense == DenseCfg(
-        num_src_images=8, window_radius=4, num_iterations=4)
+        num_src_images=8, window_radius=4, num_iterations=4, ref_stride=2)
     assert JobConfig(preset="accurate").resolved_dense == DenseCfg(
-        num_src_images=12, window_radius=5, num_iterations=5)
+        num_src_images=12, window_radius=5, num_iterations=5, ref_stride=1)
     # explicit --set override beats the preset
     over = DenseCfg(num_src_images=6, window_radius=4, num_iterations=4)
     assert JobConfig(preset="accurate", dense=over).resolved_dense == over
