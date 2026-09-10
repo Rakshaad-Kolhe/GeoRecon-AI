@@ -49,6 +49,7 @@ import pandas as pd
 import pycolmap
 
 from georecon.config import SfmCfg
+from georecon.util import colmap_cli
 from georecon.util.ply import write_ply
 
 if TYPE_CHECKING:
@@ -144,6 +145,43 @@ def _extract(db: Path, frames_dir: Path, names, ro, fe, device) -> None:
     )
 
 
+def _extract_match_cli(ctx, cfg: SfmCfg, paths, frames_dir: Path, names,
+                       mask_dir, cam_params):
+    """GPU feature extraction + sequential matching via the native COLMAP CLI.
+    Mapping still runs through pycolmap. Returns (extract_s, match_s)."""
+    img_list = paths.sfm / "image_list.txt"
+    img_list.write_text("\n".join(names) + "\n", encoding="utf-8")
+
+    fe_opts = {
+        "database_path": str(paths.sfm_db),
+        "image_path": str(frames_dir),
+        "image_list_path": str(img_list),
+        "ImageReader.single_camera": True,
+        "ImageReader.camera_model": cfg.camera_model,
+        "ImageReader.mask_path": str(mask_dir) if mask_dir is not None else None,
+        "ImageReader.camera_params": cam_params,
+        "SiftExtraction.max_num_features": cfg.max_features,
+        "SiftExtraction.use_gpu": True,
+    }
+    t0 = time.time()
+    colmap_cli.run("feature_extractor", fe_opts, ctx.log)
+    extract_s = time.time() - t0
+    if mask_dir is not None:
+        ctx.log.info("CLI feature extraction used masks in %s", mask_dir)
+
+    mt_opts = {
+        "database_path": str(paths.sfm_db),
+        "SequentialMatching.overlap": int(cfg.seq_overlap),
+        "SequentialMatching.quadratic_overlap": bool(cfg.quadratic_overlap),
+        "SequentialMatching.loop_detection": False,
+        "SiftMatching.use_gpu": True,
+    }
+    t0 = time.time()
+    colmap_cli.run("sequential_matcher", mt_opts, ctx.log)
+    match_s = time.time() - t0
+    return extract_s, match_s
+
+
 def run(ctx: "StageContext") -> dict:
     cfg: SfmCfg = ctx.cfg.sfm
     paths = ctx.paths
@@ -180,44 +218,53 @@ def run(ctx: "StageContext") -> dict:
 
     mask_dir = mask_dir_for(ctx.cfg.mask_dynamic, paths.masks)
     gpu = want_gpu(cfg.use_gpu)
-    device = pycolmap.Device.cuda if gpu else pycolmap.Device.cpu
-    device_str = "cuda" if gpu else "cpu"
-    ctx.log.info("pycolmap %s | has_cuda=%s | device=%s | %d frames",
-                 pycolmap.__version__, pycolmap.has_cuda, device_str, len(names))
+    cli = colmap_cli.probe()
+    hybrid = gpu and cli["available"] and cli["cuda"]
 
-    # ---- feature extraction (GPU -> CPU retry) --------------------------------
-    fe = pycolmap.FeatureExtractionOptions()
-    fe.sift.max_num_features = cfg.max_features
-    fe.use_gpu = gpu
-    ro = build_reader_options(cfg, mask_dir, cam_params)
+    device = pycolmap.Device.cuda if (gpu and not hybrid) else pycolmap.Device.cpu
+    device_str = "cuda-cli" if hybrid else ("cuda" if gpu and pycolmap.has_cuda else "cpu")
+    ctx.log.info("pycolmap %s | has_cuda=%s | colmap-cli=%s | device=%s | %d frames",
+                 pycolmap.__version__, pycolmap.has_cuda,
+                 cli["version"] if cli["available"] else "no", device_str, len(names))
 
-    t0 = time.time()
-    try:
-        _extract(paths.sfm_db, frames_dir, names, ro, fe, device)
-    except Exception as exc:                       # noqa: BLE001
-        if not gpu:
-            raise
-        ctx.warn(f"GPU feature extraction failed ({type(exc).__name__}: {exc}); "
-                 f"retrying on CPU")
-        gpu, device, device_str = False, pycolmap.Device.cpu, "cpu"
-        fe.use_gpu = False
-        paths.sfm_db.unlink(missing_ok=True)
-        _extract(paths.sfm_db, frames_dir, names, ro, fe, device)
-    extract_s = time.time() - t0
-    if mask_dir is not None:
-        ctx.log.info("feature extraction used masks in %s", mask_dir)
+    if hybrid:
+        colmap_cli.check_version_compat(ctx.log)
+        extract_s, match_s = _extract_match_cli(ctx, cfg, paths, frames_dir, names,
+                                                mask_dir, cam_params)
+    else:
+        # ---- feature extraction (GPU -> CPU retry) -----------------------------
+        fe = pycolmap.FeatureExtractionOptions()
+        fe.sift.max_num_features = cfg.max_features
+        fe.use_gpu = (device == pycolmap.Device.cuda)
+        ro = build_reader_options(cfg, mask_dir, cam_params)
 
-    # ---- sequential matching ------------------------------------------------
-    mm = pycolmap.FeatureMatchingOptions()
-    mm.use_gpu = gpu
-    sp = pycolmap.SequentialPairingOptions()
-    sp.overlap = int(cfg.seq_overlap)
-    sp.quadratic_overlap = bool(cfg.quadratic_overlap)
-    sp.loop_detection = False
-    t0 = time.time()
-    pycolmap.match_sequential(str(paths.sfm_db), matching_options=mm,
-                              pairing_options=sp, device=device)
-    match_s = time.time() - t0
+        t0 = time.time()
+        try:
+            _extract(paths.sfm_db, frames_dir, names, ro, fe, device)
+        except Exception as exc:                   # noqa: BLE001
+            if device != pycolmap.Device.cuda:
+                raise
+            ctx.warn(f"GPU feature extraction failed ({type(exc).__name__}: {exc}); "
+                     f"retrying on CPU")
+            device, device_str = pycolmap.Device.cpu, "cpu"
+            fe.use_gpu = False
+            paths.sfm_db.unlink(missing_ok=True)
+            _extract(paths.sfm_db, frames_dir, names, ro, fe, device)
+        extract_s = time.time() - t0
+        if mask_dir is not None:
+            ctx.log.info("feature extraction used masks in %s", mask_dir)
+
+        # ---- sequential matching --------------------------------------------
+        mm = pycolmap.FeatureMatchingOptions()
+        mm.use_gpu = (device == pycolmap.Device.cuda)
+        sp = pycolmap.SequentialPairingOptions()
+        sp.overlap = int(cfg.seq_overlap)
+        sp.quadratic_overlap = bool(cfg.quadratic_overlap)
+        sp.loop_detection = False
+        t0 = time.time()
+        pycolmap.match_sequential(str(paths.sfm_db), matching_options=mm,
+                                  pairing_options=sp, device=device)
+        match_s = time.time() - t0
 
     # ---- mapping: global (GLOMAP) with incremental fallback ----------------
     scratch = paths.sfm_sparse / "_work"

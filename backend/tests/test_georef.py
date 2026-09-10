@@ -11,6 +11,7 @@ from georecon.stages import georef
 from georecon.stages.georef import (
     collinearity_ratio,
     contiguous_folds,
+    holdout_rmse,
     solve_collinear,
     solve_sim3,
 )
@@ -60,6 +61,28 @@ def test_solve_sim3_recovers_scale_under_2m_gps_noise():
     ss, RR, tt, inl, _ = solve_sim3(C, U, cfg, seed=0)
     assert abs(ss - s) / s < 0.02
     assert inl.mean() > 0.8
+
+
+def test_holdout_rmse_robust_to_single_outlier():
+    rng = np.random.default_rng(21)
+    n = 40
+    C = np.column_stack([np.linspace(0, 200, n), rng.normal(scale=8, size=n),
+                         rng.normal(scale=3, size=n)])
+    s, R, t = 1.5, _rand_rot(rng), np.array([4.0, -1.0, 2.0])
+    U = apply(s, R, t, C) + rng.normal(scale=0.4, size=(n, 3))
+    cfg = GeorefCfg(ransac_thr_m=3.0, ransac_iters=400, holdout_folds=5)
+
+    _, _, _, inl_clean, _ = solve_sim3(C, U, cfg, 0)
+    clean = holdout_rmse("sim3", C, U, np.zeros((0, 3)), None, inl_clean, cfg)["h"]
+
+    U_out = U.copy()
+    U_out[18] += np.array([100.0, 0.0, 0.0])
+    _, _, _, inl_out, _ = solve_sim3(C, U_out, cfg, 0)
+    assert not inl_out[18]
+    ho = holdout_rmse("sim3", C, U_out, np.zeros((0, 3)), None, inl_out, cfg)
+    assert ho["h"] <= 1.5 * clean
+    assert ho["h_all"] > 5.0 * ho["h"]                  # outlier-inclusive still sees it
+    assert len(ho["folds_h"]) == 5
 
 
 def test_rmse_h_reported_over_inliers_not_all_pairs():

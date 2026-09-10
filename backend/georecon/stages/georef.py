@@ -95,32 +95,52 @@ def _fit(branch, C, U, pts, view_dirs, cfg, seed):
     return solve_sim3(C, U, cfg, seed)[:3]
 
 
-def holdout_rmse(branch, C, U, pts, view_dirs, cfg):
-    dh, dv = [], []
+def holdout_rmse(branch, C, U, pts, view_dirs, full_inliers, cfg):
+    """Contiguous-block hold-out. Each fold is fitted with the same robust
+    branch on the *training inliers of the full fit* (never plain umeyama, and
+    never on a full-fit outlier). Headline h/v pool held-out frames that are
+    full-fit inliers; ``*_all`` keep every held-out frame.
+    """
+    fin = np.asarray(full_inliers, bool)
+    hi, vi, ha, va, folds_h = [], [], [], [], []
     for fold in contiguous_folds(len(C), cfg.holdout_folds):
         keep = np.ones(len(C), bool)
         keep[fold] = False
-        if keep.sum() < 3:
+        train = keep & fin
+        if train.sum() < 3:
             continue
-        vd = view_dirs[keep] if view_dirs is not None else None
-        s, R, t = _fit(branch, C[keep], U[keep], pts, vd, cfg, cfg.seed)
+        vd = view_dirs[train] if view_dirs is not None else None
+        s, R, t = _fit(branch, C[train], U[train], pts, vd, cfg, cfg.seed)
         res = apply(s, R, t, C[fold]) - U[fold]
-        dh.append(np.linalg.norm(res[:, :2], axis=1))
-        dv.append(np.abs(res[:, 2]))
-    if not dh:
-        return float("nan"), float("nan")
-    # pooled over every held-out frame (sequential blocks -> honest generalisation)
-    return rmse(np.concatenate(dh)), rmse(np.concatenate(dv))
+        h = np.linalg.norm(res[:, :2], axis=1)
+        v = np.abs(res[:, 2])
+        folds_h.append(round(float(rmse(h)), 4))
+        ha.append(h)
+        va.append(v)
+        m = fin[fold]
+        if m.any():
+            hi.append(h[m])
+            vi.append(v[m])
+    if not ha:
+        nan = float("nan")
+        return {"h": nan, "v": nan, "h_all": nan, "v_all": nan, "folds_h": folds_h}
+    ha, va = np.concatenate(ha), np.concatenate(va)
+    hi_c = np.concatenate(hi) if hi else ha
+    vi_c = np.concatenate(vi) if vi else va
+    return {"h": rmse(hi_c), "v": rmse(vi_c),
+            "h_all": rmse(ha), "v_all": rmse(va), "folds_h": folds_h}
 
 
-def scale_drift_pct(branch, C, U, pts, view_dirs, cfg, s_full):
+def scale_drift_pct(branch, C, U, pts, view_dirs, full_inliers, cfg, s_full):
+    fin = np.asarray(full_inliers, bool)
     m = len(C) // 2
-    if m < 3 or len(C) - m < 3 or s_full == 0:
+    a, b = fin[:m], fin[m:]
+    if a.sum() < 3 or b.sum() < 3 or s_full == 0:
         return 0.0
-    vd1 = view_dirs[:m] if view_dirs is not None else None
-    vd2 = view_dirs[m:] if view_dirs is not None else None
-    s1 = _fit(branch, C[:m], U[:m], pts, vd1, cfg, cfg.seed)[0]
-    s2 = _fit(branch, C[m:], U[m:], pts, vd2, cfg, cfg.seed)[0]
+    vd1 = view_dirs[:m][a] if view_dirs is not None else None
+    vd2 = view_dirs[m:][b] if view_dirs is not None else None
+    s1 = _fit(branch, C[:m][a], U[:m][a], pts, vd1, cfg, cfg.seed)[0]
+    s2 = _fit(branch, C[m:][b], U[m:][b], pts, vd2, cfg, cfg.seed)[0]
     return float(abs(s1 - s2) / abs(s_full) * 100.0)
 
 
@@ -234,11 +254,13 @@ def run(ctx: "StageContext") -> dict:
         rmse_h = rmse_v = rmse_h_all = 0.0
         resid_h_median = resid_h_p90 = resid_h_max = 0.0
 
-    hold_h = hold_v = drift = 0.0
+    ho = {"h": 0.0, "v": 0.0, "h_all": 0.0, "v_all": 0.0, "folds_h": []}
+    drift = 0.0
     if georeferenced:
         pts_for = P if branch == "collinear" else np.zeros((0, 3))
-        hold_h, hold_v = holdout_rmse(branch, C, U, pts_for, views, cfg)
-        drift = scale_drift_pct(branch, C, U, pts_for, views, cfg, s)
+        ho = holdout_rmse(branch, C, U, pts_for, views, inliers, cfg)
+        drift = scale_drift_pct(branch, C, U, pts_for, views, inliers, cfg, s)
+    hold_h = ho["h"]
 
     n_inl = int(inliers.sum()) if len(C) else 0
     _write_outputs(paths, pairs, s, R, t, branch, collinearity, res, inliers)
@@ -256,16 +278,20 @@ def run(ctx: "StageContext") -> dict:
         "resid_h_median": round(resid_h_median, 4),
         "resid_h_p90": round(resid_h_p90, 4),
         "resid_h_max": round(resid_h_max, 4),
-        "holdout_rmse_h": round(hold_h, 4),
-        "holdout_rmse_v": round(hold_v, 4),
+        "holdout_rmse_h": round(ho["h"], 4),
+        "holdout_rmse_v": round(ho["v"], 4),
+        "holdout_rmse_h_all": round(ho["h_all"], 4),
+        "holdout_rmse_v_all": round(ho["v_all"], 4),
+        "holdout_folds_h": ho["folds_h"],
         "scale_drift_pct": round(drift, 3),
         "up_agreement": (round(up_agreement, 4) if up_agreement is not None else None),
         "track_length_m": round(track_len, 3),
         "seconds": round(time.time() - t0, 3),
     }
     ctx.log.info("georef: branch=%s pairs=%d inliers=%d scale=%.4f "
-                 "rmse_h=%.2fm (all %.2fm) holdout_h=%.2fm drift=%.1f%%",
-                 branch, len(pairs), n_inl, s, rmse_h, rmse_h_all, hold_h, drift)
+                 "rmse_h=%.2fm (all %.2fm) holdout_h=%.2fm (all %.2fm) folds=%s drift=%.1f%%",
+                 branch, len(pairs), n_inl, s, rmse_h, rmse_h_all,
+                 ho["h"], ho["h_all"], ho["folds_h"], drift)
     if georeferenced and n_inl < 0.7 * len(pairs):
         ctx.warn(f"only {n_inl}/{len(pairs)} GPS pairs are inliers (<70%)")
     if georeferenced and np.isfinite(hold_h) and hold_h > 5.0:
