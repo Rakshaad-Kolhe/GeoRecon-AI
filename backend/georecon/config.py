@@ -14,7 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Process-wide settings, overridable via GEORECON_* env vars."""
 
-    model_config = SettingsConfigDict(env_prefix="GEORECON_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="GEORECON_", extra="ignore", env_file=".env", env_file_encoding="utf-8"
+    )
 
     jobs_dir: str = "jobs"
     models_dir: str = "models"
