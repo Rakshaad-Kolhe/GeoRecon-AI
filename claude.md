@@ -84,6 +84,8 @@ jobs/<id>/
 - COLMAP camera centre is `C = -Rᵀ t`. The pycolmap API changed between 3.x and
   4.x — check names against the installed version
   (`python -c "import pycolmap; help(pycolmap.Image)"`) before writing code.
+- Camera model: **SIMPLE_RADIAL** (`f, cx, cy, k`). More stable than OPENCV for a
+  low-parallax single straight pass; upgrade only if parallax is clearly rich.
 
 ## Georeferencing — do not "simplify" this
 

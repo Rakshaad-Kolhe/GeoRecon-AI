@@ -14,7 +14,8 @@ backend/models/
 # Node
 node_modules/
 
-# Data — keep only the tiny fixture
+# Data — keep only the tiny fixture; raw downloads & generated fixtures are local
+data/raw/
 data/*
 !data/samples/
 data/samples/*

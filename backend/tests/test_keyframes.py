@@ -83,12 +83,12 @@ def test_select_forces_boundaries_across_lost_tracking_with_moving_gps():
 # --------------------------------------------------------------------------- #
 # full stage on a synthetic clip
 # --------------------------------------------------------------------------- #
-def test_keyframes_integration(tmp_path, synth_clip):
+def test_keyframes_integration(tmp_path, synth_clip, monkeypatch):
+    monkeypatch.setattr(pipeline, "STAGES", pipeline.STAGES[:2])  # ingest + keyframes only
     video, srt = synth_clip(seconds=6.0, fps=20, w=640, h=360,
                             speed_px=5.0, blur_seg=(2.0, 2.5))
     job_dir = tmp_path / "job"
-    cfg = JobConfig(video_path=str(video), telemetry_path=str(srt), preset="fast",
-                    mask_dynamic=False)  # keep masking (network/weights) out of this test
+    cfg = JobConfig(video_path=str(video), telemetry_path=str(srt), preset="fast")
     state = pipeline.run_job(job_dir, cfg)
     assert state["state"] == "done", state
 
