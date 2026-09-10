@@ -58,6 +58,22 @@ export function enuToGeodetic(
   return { lat, lon, alt: origin.alt + p.z }
 }
 
+/** The four bbox_enu XY corners as [lat, lon] (same tangent approx as Inspect). */
+export function bboxFootprintLatLng(meta: ViewerMeta): [number, number][] {
+  const { min, max } = meta.bbox_enu
+  const z = (min[2] + max[2]) / 2
+  const corners: Vec3[] = [
+    { x: min[0], y: min[1], z },
+    { x: max[0], y: min[1], z },
+    { x: max[0], y: max[1], z },
+    { x: min[0], y: max[1], z },
+  ]
+  return corners.map((c) => {
+    const g = enuToGeodetic(c, meta.origin)
+    return [g.lat, g.lon]
+  })
+}
+
 const m = (v: number) => `${v.toFixed(3)} m`
 
 export function buildMeasurement(

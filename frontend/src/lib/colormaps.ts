@@ -1,6 +1,9 @@
-// Small LUT colormaps (0..1 in, [r,g,b] 0..1 out) for point-cloud colour modes.
+// Small LUT colormaps (0..1 in, [r,g,b] LINEAR 0..1 out) for point-cloud colour
+// modes. The stops below are authored in sRGB; we return linear so the values
+// can be written straight into a three vertex-colour attribute without looking
+// dark — equivalent to `new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace)`.
 
-type Stop = [number, number, number] // 0..255
+type Stop = [number, number, number] // 0..255, sRGB
 
 const TURBO: Stop[] = [
   [48, 18, 59],
@@ -26,6 +29,13 @@ const VIRIDIS: Stop[] = [
   [253, 231, 37],
 ]
 
+// three.js SRGBToLinear (ColorManagement) — matches Color.setRGB(..., SRGBColorSpace)
+function srgbToLinear(c: number): number {
+  return c < 0.04045
+    ? c * 0.0773993808
+    : Math.pow(c * 0.9478672986 + 0.0521327014, 2.4)
+}
+
 function sample(lut: Stop[], t: number): [number, number, number] {
   const x = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0)) * (lut.length - 1)
   const i = Math.floor(x)
@@ -34,9 +44,9 @@ function sample(lut: Stop[], t: number): [number, number, number] {
   const a = lut[i]
   const b = lut[j]
   return [
-    (a[0] + (b[0] - a[0]) * f) / 255,
-    (a[1] + (b[1] - a[1]) * f) / 255,
-    (a[2] + (b[2] - a[2]) * f) / 255,
+    srgbToLinear((a[0] + (b[0] - a[0]) * f) / 255),
+    srgbToLinear((a[1] + (b[1] - a[1]) * f) / 255),
+    srgbToLinear((a[2] + (b[2] - a[2]) * f) / 255),
   ]
 }
 

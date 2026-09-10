@@ -2,6 +2,8 @@ import type { Api } from './client'
 import { generateMockSite, hashSeed } from './mockSite'
 import type {
   CreateJobInput,
+  FileEntry,
+  HealthInfo,
   JobDetail,
   Metrics,
   StageMetrics,
@@ -77,6 +79,11 @@ function nowIso(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString()
 }
 
+function runningJobId(): string | null {
+  for (const j of store.values()) if (j.detail.state === 'running') return j.detail.job_id
+  return null
+}
+
 function buildMetrics(upTo: number, override?: Partial<Record<StageName, StageMetrics>>): Metrics {
   const stages: Partial<Record<StageName, StageMetrics>> = {}
   let total = 0
@@ -133,6 +140,16 @@ const REAL_DEMO_METRICS: Metrics = {
     validate: { seconds: 3, holdout_folds: 5 },
   },
   total_seconds: 427,
+}
+
+// real-demo's metrics come from the real run's report/metrics.json when it has
+// been dropped into public/mock/real-demo/ (see PR 13 setup); otherwise fall back.
+let realDemoMetricsP: Promise<Metrics> | null = null
+function loadRealDemoMetrics(): Promise<Metrics> {
+  realDemoMetricsP ??= fetch('/mock/real-demo/metrics.json')
+    .then((r) => (r.ok ? (r.json() as Promise<Metrics>) : REAL_DEMO_METRICS))
+    .catch(() => REAL_DEMO_METRICS)
+  return realDemoMetricsP
 }
 
 function seed(store: Map<string, MockJob>) {
@@ -321,7 +338,42 @@ async function prepareViewerEntry(jobId: string): Promise<ViewerEntry> {
   return entry
 }
 
+const MOCK_HEALTH: HealthInfo = {
+  torch_cuda: true,
+  gpu_name: 'NVIDIA GeForce RTX 4060 Laptop GPU (mock)',
+  colmap: { available: true, version: '4.2.0', cuda: true },
+  pycolmap_version: '4.2.0',
+  queue_len: 0,
+  running_job: null,
+}
+
+const MOCK_FILES: FileEntry[] = [
+  { path: 'pointcloud.ply', bytes: 15_543_618 },
+  { path: 'pointcloud.las', bytes: 13_212_392 },
+  { path: 'mesh.obj', bytes: 11_569_243 },
+  { path: 'model.glb', bytes: 4_029_252 },
+  { path: 'dsm.tif', bytes: 96_367 },
+  { path: 'color.tif', bytes: 72_252 },
+  { path: 'trajectory.geojson', bytes: 10_605 },
+  { path: 'georef.json', bytes: 195 },
+  { path: 'web/meta.json', bytes: 3_543 },
+]
+
+/** file list from metrics.stages.export.files, dropping web/ derivatives. */
+function filesFromMetrics(metrics: Metrics | undefined): FileEntry[] | null {
+  const raw = metrics?.stages?.export?.files
+  if (!raw || typeof raw !== 'object') return null
+  return Object.entries(raw as Record<string, number>)
+    .map(([p, bytes]) => ({ path: p.replace(/\\/g, '/'), bytes }))
+    .filter((f) => !f.path.startsWith('web/'))
+    .sort((a, b) => a.path.localeCompare(b.path))
+}
+
 export const mockApi: Api = {
+  async getHealth() {
+    return delay({ ...MOCK_HEALTH, running_job: runningJobId() })
+  },
+
   async listJobs() {
     const jobs = [...store.values()]
       .sort((a, b) => b.createdMs - a.createdMs)
@@ -336,7 +388,26 @@ export const mockApi: Api = {
       err.status = 404
       throw err
     }
-    return delay(clone(job.detail))
+    const detail = clone(job.detail)
+    if (id === 'real-demo') detail.metrics = await loadRealDemoMetrics()
+    return delay(detail)
+  },
+
+  async cancelJob(id) {
+    const job = store.get(id)
+    if (job && (job.detail.state === 'queued' || job.detail.state === 'running')) {
+      job.detail.state = 'failed'
+      job.detail.message = 'cancelled by user'
+      job.detail.updated_at = nowIso()
+    }
+    return delay(undefined)
+  },
+
+  async getFiles(id) {
+    if (id === 'real-demo') {
+      return delay(filesFromMetrics(await loadRealDemoMetrics()) ?? MOCK_FILES)
+    }
+    return delay(MOCK_FILES)
   },
 
   createJob(input: CreateJobInput, onUploadProgress) {
@@ -392,5 +463,9 @@ export const mockApi: Api = {
     if (!entry) return `/mock/${id}/${norm}`
     if (entry.publicAssets) return `/mock/${id}/${norm}`
     return entry.urls[norm] ?? `/mock/${id}/${norm}`
+  },
+
+  reportUrl(id, path) {
+    return `/mock/${id}/report/${path.replace(/^\/+/, '')}`
   },
 }
