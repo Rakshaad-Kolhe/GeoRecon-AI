@@ -3,19 +3,21 @@ matching and dense MVS, which the pycolmap CPU wheel cannot do).
 
 Set ``GEORECON_COLMAP_BIN`` to a ``colmap`` / ``colmap.bat`` (COLMAP 4.x).
 
-No native COLMAP was installed on the dev machine, so the option names below
-are taken from COLMAP 4.x (`colmap <tool> -h`) and cross-checked against the
-pycolmap 4.2.0 option structs verified in stages/sfm.py. Only these are used:
+Option names verified live against COLMAP 4.2.0 CUDA (`colmap <tool> -h`,
+Commit be5e291) on 2026-09-10. In 4.2 the SIFT GPU toggles moved namespace:
+``SiftExtraction.use_gpu`` -> ``FeatureExtraction.use_gpu`` and
+``SiftMatching.use_gpu`` -> ``FeatureMatching.use_gpu`` (old names are rejected
+with "unrecognised option"). Only these options are used:
 
   feature_extractor
     --database_path --image_path --image_list_path
     --ImageReader.single_camera 1 --ImageReader.camera_model SIMPLE_RADIAL
     --ImageReader.mask_path --ImageReader.camera_params "f,cx,cy,k"
-    --SiftExtraction.max_num_features --SiftExtraction.use_gpu 1
+    --SiftExtraction.max_num_features --FeatureExtraction.use_gpu 1
   sequential_matcher
     --database_path --SequentialMatching.overlap
     --SequentialMatching.quadratic_overlap --SequentialMatching.loop_detection 0
-    --SiftMatching.use_gpu 1
+    --FeatureMatching.use_gpu 1
   image_undistorter
     --image_path --input_path (sparse/0) --output_path
     --output_type COLMAP --max_image_size

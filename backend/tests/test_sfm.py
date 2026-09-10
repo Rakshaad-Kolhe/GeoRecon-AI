@@ -10,6 +10,7 @@ from georecon.config import JobConfig, SfmCfg
 from georecon.stages.sfm import (
     _camera_rows,
     build_reader_options,
+    gpu_not_disabled,
     largest_unregistered_gap,
     mask_dir_for,
     want_gpu,
@@ -38,6 +39,15 @@ def test_want_gpu():
     assert want_gpu(False) is False
     assert want_gpu("false") is False
     assert want_gpu("auto") == bool(pycolmap.has_cuda)
+
+
+def test_gpu_not_disabled():
+    # "auto" must allow the CUDA-CLI hybrid even when pycolmap is CPU-only.
+    assert gpu_not_disabled("auto") is True
+    assert gpu_not_disabled(True) is True
+    assert gpu_not_disabled(False) is False
+    for off in ("false", "0", "no", "cpu", "off"):
+        assert gpu_not_disabled(off) is False
 
 
 def test_mask_dir_for(tmp_path):

@@ -77,6 +77,15 @@ def want_gpu(use_gpu) -> bool:
     return s in ("true", "1", "yes", "gpu", "cuda")
 
 
+def gpu_not_disabled(use_gpu) -> bool:
+    """True unless GPU was turned off explicitly. Gates the CUDA-CLI hybrid,
+    which is worth trying even when the pycolmap wheel is CPU-only
+    (``pycolmap.has_cuda`` False) — that is the whole reason to shell out."""
+    if isinstance(use_gpu, bool):
+        return use_gpu
+    return str(use_gpu).strip().lower() not in ("false", "0", "no", "cpu", "off")
+
+
 def build_reader_options(cfg: SfmCfg, mask_dir: Path | None,
                          cam_params: str | None) -> pycolmap.ImageReaderOptions:
     ro = pycolmap.ImageReaderOptions()
@@ -161,7 +170,7 @@ def _extract_match_cli(ctx, cfg: SfmCfg, paths, frames_dir: Path, names,
         "ImageReader.mask_path": str(mask_dir) if mask_dir is not None else None,
         "ImageReader.camera_params": cam_params,
         "SiftExtraction.max_num_features": cfg.max_features,
-        "SiftExtraction.use_gpu": True,
+        "FeatureExtraction.use_gpu": True,
     }
     t0 = time.time()
     colmap_cli.run("feature_extractor", fe_opts, ctx.log)
@@ -174,7 +183,7 @@ def _extract_match_cli(ctx, cfg: SfmCfg, paths, frames_dir: Path, names,
         "SequentialMatching.overlap": int(cfg.seq_overlap),
         "SequentialMatching.quadratic_overlap": bool(cfg.quadratic_overlap),
         "SequentialMatching.loop_detection": False,
-        "SiftMatching.use_gpu": True,
+        "FeatureMatching.use_gpu": True,
     }
     t0 = time.time()
     colmap_cli.run("sequential_matcher", mt_opts, ctx.log)
@@ -219,7 +228,19 @@ def run(ctx: "StageContext") -> dict:
     mask_dir = mask_dir_for(ctx.cfg.mask_dynamic, paths.masks)
     gpu = want_gpu(cfg.use_gpu)
     cli = colmap_cli.probe()
-    hybrid = gpu and cli["available"] and cli["cuda"]
+    # SfM feature extraction + matching share the database file, so the CLI and
+    # pycolmap must agree on major.minor. Dense (bin model reader) is stable
+    # across 4.x, so a mismatch only disables the SfM hybrid, not dense.
+    db_compat = None
+    if cli["available"] and cli["version"]:
+        db_compat = (".".join(cli["version"].split(".")[:2])
+                     == ".".join(pycolmap.__version__.split(".")[:2]))
+    gpu_cli = gpu_not_disabled(cfg.use_gpu) and cli["available"] and cli["cuda"]
+    hybrid = gpu_cli and db_compat is not False
+    if gpu_cli and db_compat is False:
+        ctx.warn(f"COLMAP CLI {cli['version']} vs pycolmap {pycolmap.__version__}: "
+                 f"major.minor differ — SfM hybrid disabled (shared DB format); "
+                 f"CLI still used for dense")
 
     device = pycolmap.Device.cuda if (gpu and not hybrid) else pycolmap.Device.cpu
     device_str = "cuda-cli" if hybrid else ("cuda" if gpu and pycolmap.has_cuda else "cpu")
@@ -228,7 +249,6 @@ def run(ctx: "StageContext") -> dict:
                  cli["version"] if cli["available"] else "no", device_str, len(names))
 
     if hybrid:
-        colmap_cli.check_version_compat(ctx.log)
         extract_s, match_s = _extract_match_cli(ctx, cfg, paths, frames_dir, names,
                                                 mask_dir, cam_params)
     else:
@@ -328,6 +348,7 @@ def run(ctx: "StageContext") -> dict:
     metrics = {
         "pycolmap_version": pycolmap.__version__,
         "device": device_str,
+        "colmap_db_compatible": db_compat,
         "mapper_used": mapper_used,
         "frames": len(names),
         "registered": registered,
