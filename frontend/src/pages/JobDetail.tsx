@@ -1,0 +1,121 @@
+import { useQuery } from '@tanstack/react-query'
+import { useRef } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { api, ApiError } from '../api/client'
+import { LogPanel } from '../components/LogPanel'
+import { Panel } from '../components/Panel'
+import { ProgressBar } from '../components/ProgressBar'
+import { ResultsTabs } from '../components/ResultsTabs'
+import { StateBadge } from '../components/StateBadge'
+import { Stepper } from '../components/Stepper'
+import { elapsedSeconds, formatSeconds } from '../lib/format'
+
+export function JobDetail() {
+  const { id } = useParams<{ id: string }>()
+  const logRef = useRef<HTMLDivElement>(null)
+
+  const { data: job, error, isLoading } = useQuery({
+    queryKey: ['job', id],
+    queryFn: () => api.getJob(id as string),
+    enabled: !!id,
+    refetchInterval: (q) => {
+      const st = q.state.data?.state
+      return st === 'queued' || st === 'running' ? 1500 : false
+    },
+  })
+
+  if (isLoading) return <p className="text-sm text-slate-500">loading…</p>
+  if (error) {
+    const notFound = error instanceof ApiError && error.status === 404
+    return (
+      <Panel>
+        <p className="text-sm text-red-400">
+          {notFound ? `No job "${id}".` : (error as Error).message}
+        </p>
+        <Link to="/" className="mt-2 inline-block text-sm text-cyan-400">
+          ← all jobs
+        </Link>
+      </Panel>
+    )
+  }
+  if (!job) return null
+
+  const active = job.state === 'queued' || job.state === 'running'
+  const total = active
+    ? elapsedSeconds(job.created_at)
+    : elapsedSeconds(job.created_at, job.updated_at)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Link to="/" className="text-sm text-slate-500 hover:text-slate-300">
+          ← jobs
+        </Link>
+        <h1 className="font-mono text-lg text-slate-100">{job.job_id}</h1>
+        <StateBadge state={job.state} />
+        <span className="font-mono text-sm text-slate-400">
+          {formatSeconds(total)} elapsed
+        </span>
+        {job.preset && (
+          <span className="rounded border border-slate-800 px-2 py-0.5 text-xs text-slate-400">
+            {job.preset}
+          </span>
+        )}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-1">
+          <Panel title="Stages">
+            <Stepper job={job} />
+          </Panel>
+        </div>
+
+        <div className="space-y-4 lg:col-span-2">
+          <Panel title="Progress">
+            <ProgressBar value={job.progress} />
+            <p className="mt-2 font-mono text-xs text-slate-400">{job.message}</p>
+
+            {job.warnings.length > 0 && (
+              <ul className="mt-3 space-y-1">
+                {job.warnings.map((w, i) => (
+                  <li
+                    key={i}
+                    className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-300"
+                  >
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {job.state === 'failed' && (
+              <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 p-3">
+                <p className="text-sm font-semibold text-red-300">
+                  Failed at {job.stage}
+                </p>
+                <p className="mt-1 font-mono text-xs text-red-200/90">
+                  {job.message}
+                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    logRef.current?.scrollIntoView({ behavior: 'smooth' })
+                  }
+                  className="mt-2 text-xs text-cyan-400 hover:underline"
+                >
+                  view log
+                </button>
+              </div>
+            )}
+          </Panel>
+
+          <ResultsTabs job={job} />
+        </div>
+      </div>
+
+      <div ref={logRef}>
+        <LogPanel jobId={job.job_id} active={active} />
+      </div>
+    </div>
+  )
+}
