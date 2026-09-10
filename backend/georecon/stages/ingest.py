@@ -42,6 +42,19 @@ def _probe_video(path: Path) -> dict:
     }
 
 
+def _ingest_media(src: Path, input_dir: Path, stem: str) -> Path:
+    """Return the workspace copy of ``src`` (``input/<stem>.<ext>``), copying it
+    in only when it does not already live in ``input/`` (API uploads stream
+    straight there)."""
+    src = src.resolve()
+    dst = (input_dir / f"{stem}{src.suffix.lower()}").resolve()
+    if src.parent == input_dir.resolve() or src == dst:
+        return src
+    if not dst.exists():
+        shutil.copy2(src, dst)
+    return dst
+
+
 def run(ctx: "StageContext") -> dict:
     cfg = ctx.cfg
     paths = ctx.paths
@@ -52,9 +65,7 @@ def run(ctx: "StageContext") -> dict:
     if not src_video.exists():
         raise ValueError(f"video not found: {src_video}")
 
-    dst_video = paths.input / f"video{src_video.suffix.lower()}"
-    if not dst_video.exists():
-        shutil.copy2(src_video, dst_video)
+    dst_video = _ingest_media(src_video, paths.input, "video")
 
     probe = _probe_video(dst_video)
     ctx.log.info(
@@ -68,9 +79,7 @@ def run(ctx: "StageContext") -> dict:
         src_tel = Path(cfg.telemetry_path)
         if not src_tel.exists():
             raise ValueError(f"telemetry not found: {src_tel}")
-        dst_tel = paths.input / f"telemetry{src_tel.suffix.lower()}"
-        if not dst_tel.exists():
-            shutil.copy2(src_tel, dst_tel)
+        dst_tel = _ingest_media(src_tel, paths.input, "telemetry")
 
         df = load_telemetry(dst_tel)
         df.to_csv(paths.input / "telemetry_norm.csv", index=False)

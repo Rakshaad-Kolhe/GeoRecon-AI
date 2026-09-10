@@ -42,6 +42,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _job_created_at(paths: "JobPaths") -> str:
+    """Preserve created_at across the run: keep the one the API wrote, else
+    fall back to the config.json mtime (legacy CLI jobs), else now."""
+    if paths.status_json.exists():
+        try:
+            prev = json.loads(paths.status_json.read_text(encoding="utf-8"))
+            if prev.get("created_at"):
+                return str(prev["created_at"])
+        except (OSError, json.JSONDecodeError):
+            pass
+    cfg_json = paths.root / "config.json"
+    if cfg_json.exists():
+        return datetime.fromtimestamp(cfg_json.stat().st_mtime, timezone.utc).isoformat()
+    return _now_iso()
+
+
 def _atomic_write_json(path: Path, payload) -> None:
     """Write JSON via a temp file + os.replace, retrying the replace on Windows
     where a virus scanner or indexer can briefly lock the destination."""
@@ -214,6 +230,8 @@ def run_job(job_dir, cfg: JobConfig) -> dict:
         "progress": 0.0,
         "message": "",
         "warnings": warnings,
+        "created_at": _job_created_at(paths),
+        "preset": cfg.preset,
         "updated_at": None,
     }
 

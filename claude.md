@@ -106,9 +106,11 @@ jobs/<id>/
 
 | preset   | max keyframes | frame long side | MVS max_image_size |
 |----------|---------------|-----------------|--------------------|
-| fast     | 150           | 1280            | 800                |
+| fast     | 150           | 1280            | 640                |
 | balanced | 300           | 1600            | 1200               |
 | accurate | 600           | 2000            | 1600               |
+
+fast also runs dense with `num_iterations=3`, `num_src_images=6` (speed).
 
 `dense.ref_stride` is 1 for every preset (stride 2 roughly quartered the fused
 cloud on the aukerman clip). It stays as an opt-in `--set dense.ref_stride=N`.
