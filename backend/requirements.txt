@@ -1,0 +1,32 @@
+# GeoRecon AI backend — full stack from CLAUDE.md (unpinned; time-boxed prototype)
+
+# Web API
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# --- SfM / MVS backend: choose ONE per platform (see CLAUDE.md) ---
+# Linux / WSL2 / Colab, CUDA 12:
+pycolmap-cuda12
+# Windows: install COLMAP 4.x CUDA CLI separately (not pip-installable),
+#          then set GEORECON_COLMAP_BACKEND=cli
+
+# CV / 3D
+opencv-python-headless
+numpy
+pandas
+scipy
+open3d
+trimesh
+
+# Geo
+pyproj
+laspy
+rasterio
+
+# AI — dynamic-object segmentation masks
+ultralytics
+
+# Dev / test
+pytest
