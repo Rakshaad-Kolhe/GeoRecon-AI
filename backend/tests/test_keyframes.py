@@ -62,6 +62,24 @@ def test_select_uniform_motion_spacing_near_threshold():
     assert abs(float(np.median(gaps)) - 10.0) <= 1.0
 
 
+def test_select_forces_boundaries_across_lost_tracking_with_moving_gps():
+    n = 120
+    sharp = np.full(n, 100.0)
+    disp = np.full(n, 2.0)
+    disp[40:75] = np.nan                    # long lost-tracking stretch
+    lat = 18.5 + np.arange(n) * 2.0e-5      # ~2.2 m per analysed step -> not hover
+    lon = np.full(n, 73.85)
+    pos, reasons, thr = select(sharp, disp, lat, lon, CFG, 20.0, max_keyframes=500)
+    assert reasons["forced_lost"] > 0
+    assert any(40 <= p <= 74 for p in pos), "no keyframe across the lost stretch"
+
+    # with the same lost stretch but a *stationary* GPS track it must not force
+    lat_hover = np.full(n, 18.5)
+    lon_hover = np.full(n, 73.85)
+    p2, r2, _ = select(sharp, disp, lat_hover, lon_hover, CFG, 20.0, max_keyframes=500)
+    assert r2["forced_lost"] == 0
+
+
 # --------------------------------------------------------------------------- #
 # full stage on a synthetic clip
 # --------------------------------------------------------------------------- #
@@ -69,7 +87,8 @@ def test_keyframes_integration(tmp_path, synth_clip):
     video, srt = synth_clip(seconds=6.0, fps=20, w=640, h=360,
                             speed_px=5.0, blur_seg=(2.0, 2.5))
     job_dir = tmp_path / "job"
-    cfg = JobConfig(video_path=str(video), telemetry_path=str(srt), preset="fast")
+    cfg = JobConfig(video_path=str(video), telemetry_path=str(srt), preset="fast",
+                    mask_dynamic=False)  # keep masking (network/weights) out of this test
     state = pipeline.run_job(job_dir, cfg)
     assert state["state"] == "done", state
 
