@@ -1,0 +1,17 @@
+# Per-job workspaces
+jobs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.db
+
+# Node
+node_modules/
+
+# Data — keep only the tiny fixture
+data/*
+!data/samples/
+data/samples/*
+!data/samples/tiny/
