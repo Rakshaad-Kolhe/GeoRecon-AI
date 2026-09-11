@@ -26,6 +26,8 @@ with "unrecognised option"). Only these options are used:
     --PatchMatchStereo.geom_consistency 1 --PatchMatchStereo.max_image_size
   stereo_fusion
     --workspace_path --workspace_format COLMAP --input_type geometric --output_path
+    --StereoFusion.min_num_pixels --StereoFusion.max_reproj_error
+    --StereoFusion.max_depth_error --StereoFusion.max_normal_error
 
 `<bin> -h` header lines used by probe(): "COLMAP <maj.min.patch>" and
 "... with CUDA" (absent -> CPU-only build).

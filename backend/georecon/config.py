@@ -38,8 +38,10 @@ class Preset:
     mvs_window_radius: int = 4
     mvs_num_iterations: int = 4
     mvs_ref_stride: int = 1
+    mvs_min_num_pixels: int = 3          # StereoFusion.min_num_pixels
     # mesh (see MeshCfg)
     poisson_depth: int = 9
+    mesh_trim: int = 7                   # PoissonMeshing.trim
     mesh_max_tris: int = 200_000
 
 
@@ -49,10 +51,12 @@ PRESETS: dict[str, Preset] = {
     "fast": Preset(max_keyframes=150, frame_long_side=1280, mvs_max_image_size=640,
                    mvs_num_iterations=3, mvs_num_src_images=6),
     "balanced": Preset(max_keyframes=300, frame_long_side=1600, mvs_max_image_size=1200,
-                       poisson_depth=10, mesh_max_tris=400_000),
+                       poisson_depth=10, mesh_max_tris=400_000,
+                       mvs_min_num_pixels=4, mesh_trim=8),
     "accurate": Preset(max_keyframes=600, frame_long_side=2000, mvs_max_image_size=1600,
                        mvs_num_src_images=12, mvs_window_radius=5, mvs_num_iterations=5,
-                       poisson_depth=11, mesh_max_tris=800_000),
+                       poisson_depth=11, mesh_max_tris=800_000,
+                       mvs_min_num_pixels=5, mesh_trim=9),
 }
 
 
@@ -131,6 +135,32 @@ class DenseCfg(BaseModel):
     window_radius: int = 4       # PatchMatchStereo.window_radius
     num_iterations: int = 4      # PatchMatchStereo.num_iterations
     ref_stride: int = 1          # compute a depth map for every Nth keyframe only
+    # StereoFusion.* (option names verified live against COLMAP 4.2.0 CUDA `-h`)
+    min_num_pixels: int = 3      # preset-driven: fast 3 / balanced 4 / accurate 5
+    max_reproj_error: float = 2.0
+    max_depth_error: float = 0.01
+    max_normal_error: float = 10.0
+
+
+class CleanCfg(BaseModel):
+    """Dense-cloud cleaning tuning (ROI crop, far/grazing + statistical
+    outlier removal). Runs between ``dense`` and ``mesh``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # ROI: orbit vs strip classification (camera-hull area / track-bbox area)
+    roi_orbit_hull_area_frac: float = 0.2
+    roi_orbit_buffer_frac: float = 0.3     # orbit: buffer = frac * hull equivalent radius
+    roi_strip_buffer_mult: float = 1.0     # strip: buffer = mult * median camera height
+    roi_z_below_pct: float = 5.0           # drop below ground p1 - pct% of vertical extent
+    # far/grazing: drop points whose nearest camera is > mult * median cam-point distance
+    far_filter_mult: float = 2.5
+    min_views: int = 3                     # drop points seen by fewer cameras (.vis available)
+    sor_k: int = 16                        # statistical outlier removal: neighbours
+    sor_std: float = 2.0                   # statistical outlier removal: std-dev multiplier
+    radius_min_neighbors: int = 4          # radius filter: min neighbours within radius
+    radius_mult: float = 3.0               # radius = mult * median point spacing
+    warn_kept_frac: float = 0.4            # warn if fewer than this fraction survive
 
 
 class MeshCfg(BaseModel):
@@ -159,11 +189,15 @@ class JobConfig(BaseModel):
     telemetry_path: Optional[str] = None
     # telemetry_t = video_t + telemetry_offset_s (applied when sampling telemetry).
     telemetry_offset_s: float = 0.0
+    # git short commit + dirty flag of the checkout that created this job.
+    code_commit: Optional[str] = None
+    code_dirty: Optional[bool] = None
     keyframes: KeyframeCfg = KeyframeCfg()
     masking: MaskCfg = MaskCfg()
     sfm: SfmCfg = SfmCfg()
     georef: GeorefCfg = GeorefCfg()
     dense: DenseCfg = DenseCfg()
+    clean: CleanCfg = CleanCfg()
     mesh: MeshCfg = MeshCfg()
 
     @property
@@ -183,7 +217,8 @@ class JobConfig(BaseModel):
         return DenseCfg(num_src_images=p.mvs_num_src_images,
                         window_radius=p.mvs_window_radius,
                         num_iterations=p.mvs_num_iterations,
-                        ref_stride=p.mvs_ref_stride)
+                        ref_stride=p.mvs_ref_stride,
+                        min_num_pixels=p.mvs_min_num_pixels)
 
     @property
     def resolved_mesh(self) -> MeshCfg:
@@ -191,7 +226,8 @@ class JobConfig(BaseModel):
         p = self.resolved_preset
         if self.mesh != MeshCfg():
             return self.mesh
-        return MeshCfg(poisson_depth=p.poisson_depth, max_tris=p.mesh_max_tris)
+        return MeshCfg(poisson_depth=p.poisson_depth, max_tris=p.mesh_max_tris,
+                       poisson_trim=p.mesh_trim)
 
     def to_json(self, job_dir) -> Path:
         path = Path(job_dir) / "config.json"

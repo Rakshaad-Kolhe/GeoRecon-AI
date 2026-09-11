@@ -1,9 +1,9 @@
 """Mesh stage: dense point cloud -> triangle mesh (ENU metres) + preview PNG.
 
-Poisson path: COLMAP ``poisson_mesher`` on ``dense/fused_sfm.ply`` (SfM frame,
-carries normals) -> trimesh cleanup -> georef transform -> ``mesh/mesh.ply``.
-Falls back to a NumPy height-field when Poisson is unavailable, errors, runs
-long, or the cloud is too sparse (no-CUDA path).
+Poisson path: COLMAP ``poisson_mesher`` directly on ``dense/clean.ply`` (ENU,
+already carries normals from the clean stage) -> trimesh cleanup -> ROI crop
+-> ``mesh/mesh.ply``. Falls back to a NumPy height-field when Poisson is
+unavailable, errors, runs long, or the cloud is too sparse (no-CUDA path).
 
 ``poisson_mesher`` options verified live against COLMAP 4.2.0 ``-h``:
   --PoissonMeshing.depth --PoissonMeshing.trim --PoissonMeshing.point_weight
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from georecon.util import colmap_cli
+from georecon.util.depth_map import read_array as read_depth_array
 from georecon.util.ply import read_ply
 
 if TYPE_CHECKING:
@@ -43,10 +44,6 @@ def _median_nn(xyz: np.ndarray, sample: int = 20_000, seed: int = 0) -> float:
     return float(np.median(d[:, 1]))
 
 
-def _transform_vertices(v: np.ndarray, s: float, R: np.ndarray, t: np.ndarray) -> np.ndarray:
-    return s * (np.asarray(v, float) @ np.asarray(R, float).T) + np.asarray(t, float)
-
-
 def _nearest_colors(query_xyz: np.ndarray, src_xyz: np.ndarray,
                     src_rgb: np.ndarray) -> np.ndarray:
     from scipy.spatial import cKDTree
@@ -62,6 +59,151 @@ def _crop_far_vertices(mesh, dense_xyz: np.ndarray, max_dist: float):
 
     d, _ = cKDTree(np.asarray(dense_xyz, float)).query(np.asarray(mesh.vertices), k=1)
     keep_v = d <= max_dist
+    n_cropped = int((~keep_v).sum())
+    if n_cropped:
+        mesh.update_faces(keep_v[mesh.faces].all(axis=1))
+        mesh.remove_unreferenced_vertices()
+    return mesh, n_cropped
+
+
+def _bilinear_sample(img: np.ndarray, u: np.ndarray, v: np.ndarray):
+    """Bilinear-sample ``img`` (H,W) or (H,W,C) at pixel coords ``(u,v)``
+    (x=col, y=row, both float). Returns (values, valid) — ``valid`` is False
+    where the 2x2 support square falls outside the image."""
+    h, w = img.shape[:2]
+    u0 = np.floor(u).astype(np.int64)
+    v0 = np.floor(v).astype(np.int64)
+    u1, v1 = u0 + 1, v0 + 1
+    valid = (u0 >= 0) & (v0 >= 0) & (u1 < w) & (v1 < h)
+    u0c, u1c = np.clip(u0, 0, w - 1), np.clip(u1, 0, w - 1)
+    v0c, v1c = np.clip(v0, 0, h - 1), np.clip(v1, 0, h - 1)
+    fu, fv = (u - u0), (v - v0)
+    Ia, Ib = img[v0c, u0c], img[v0c, u1c]
+    Ic, Id = img[v1c, u0c], img[v1c, u1c]
+    wa, wb = (1 - fu) * (1 - fv), fu * (1 - fv)
+    wc, wd = (1 - fu) * fv, fu * fv
+    if img.ndim == 3:
+        wa, wb, wc, wd = wa[:, None], wb[:, None], wc[:, None], wd[:, None]
+    return wa * Ia + wb * Ib + wc * Ic + wd * Id, valid
+
+
+def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: Path,
+                             cameras_enu_csv: Path, scale: float,
+                             tol_frac: float = 0.02, facing_thr: float = -0.2):
+    """Per-vertex colour by projecting into every undistorted camera in
+    ``ws_dir`` (``dense/ws``): a camera is a candidate where the vertex
+    projects inside the image, faces the camera
+    (``normal . viewing_direction < facing_thr``), and passes an occlusion
+    test against that camera's geometric depth map (within ``tol_frac`` of
+    the sampled depth, converted from SfM units via ``scale``). Among
+    candidates, picks max ``cos(angle) / distance``. Vectorised per camera.
+
+    Camera extrinsics come from ``georef/cameras_enu.csv`` (E,N,U + quaternion
+    already in the mesh's ENU/local frame — same values georef.py wrote);
+    only intrinsics (+ image/depth files) come from ``dense/ws``. Mixing the
+    *raw SfM-frame* pose from ``dense/ws/sparse`` with ENU-frame vertices
+    would silently put every vertex behind every camera.
+
+    Returns ``(colors uint8 (N,3), covered bool (N,))`` — ``covered`` is
+    False (colour untouched, caller supplies a fallback) where no camera
+    qualified.
+    """
+    n = len(vertices)
+    colors = np.zeros((n, 3), np.uint8)
+    covered = np.zeros(n, bool)
+    sparse, images_dir = ws_dir / "sparse", ws_dir / "images"
+    depth_dir = ws_dir / "stereo" / "depth_maps"
+    if not (sparse.exists() and images_dir.exists() and depth_dir.exists()
+            and cameras_enu_csv.exists()):
+        return colors, covered
+
+    import cv2
+    import pandas as pd
+    import pycolmap
+
+    from georecon.util.sim3 import quat_wxyz_to_R
+
+    recon = pycolmap.Reconstruction(str(sparse))
+    intrinsics = {im.name: recon.cameras[im.camera_id] for im in recon.images.values()}
+
+    cams = pd.read_csv(cameras_enu_csv)
+    cams = cams[cams["registered"] == 1]
+
+    V = np.asarray(vertices, float)
+    Nrm = np.asarray(normals, float)
+    nlen = np.linalg.norm(Nrm, axis=1, keepdims=True)
+    Nrm = np.divide(Nrm, nlen, out=np.zeros_like(Nrm), where=nlen > 1e-9)
+    best_score = np.full(n, -np.inf)
+
+    for row in cams.itertuples():
+        name = row.name
+        cam = intrinsics.get(name)
+        img_path, depth_path = images_dir / name, depth_dir / f"{name}.geometric.bin"
+        if cam is None or not img_path.exists() or not depth_path.exists():
+            continue
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+        try:
+            depth = read_depth_array(depth_path).astype(float) * float(scale)
+        except (ValueError, OSError):
+            continue
+
+        cam_center = np.array([row.E, row.N, row.U], float)
+        M = quat_wxyz_to_R(row.qw, row.qx, row.qy, row.qz)   # ENU world -> camera
+        view_dir = M[2, :]                                    # ENU-frame optical axis
+
+        Xc = (V - cam_center) @ M.T
+        z = Xc[:, 2]
+        front = z > 1e-6
+        if not front.any():
+            continue
+        uv = np.zeros((n, 2))
+        uv[front] = cam.img_from_cam(Xc[front])
+        u, v = uv[:, 0], uv[:, 1]
+        h, w = img.shape[:2]
+        facing = (Nrm @ view_dir) < facing_thr
+        cand = front & facing & (u >= 0) & (u < w - 1) & (v >= 0) & (v < h - 1)
+        if not cand.any():
+            continue
+
+        cand_idx = np.flatnonzero(cand)
+        d_sampled, dvalid = _bilinear_sample(depth, u[cand_idx], v[cand_idx])
+        good = dvalid & (d_sampled > 1e-6) & (np.abs(z[cand_idx] - d_sampled) <= tol_frac * d_sampled)
+        cand_idx = cand_idx[good]
+        if not len(cand_idx):
+            continue
+
+        dist = np.linalg.norm(V[cand_idx] - cam_center, axis=1)
+        frontal = -(Nrm[cand_idx] @ view_dir)
+        score = frontal / np.maximum(dist, 1e-6)
+
+        take = score > best_score[cand_idx]
+        take_idx = cand_idx[take]
+        if len(take_idx):
+            col_bgr, _ = _bilinear_sample(img.astype(float), u[take_idx], v[take_idx])
+            colors[take_idx] = np.clip(col_bgr[:, ::-1], 0, 255).astype(np.uint8)   # BGR -> RGB
+            best_score[take_idx] = score[take]
+            covered[take_idx] = True
+
+    return colors, covered
+
+
+def _crop_to_roi(mesh, roi: dict):
+    """Drop vertices outside the clean stage's ROI polygon / Z bounds
+    (``dense/roi.json``) plus every face that touches them."""
+    poly = roi.get("polygon") or []
+    if len(poly) < 3:
+        return mesh, 0
+    from matplotlib.path import Path as MplPath
+
+    v = np.asarray(mesh.vertices, float)
+    keep_v = MplPath(np.asarray(poly, float)).contains_points(v[:, :2])
+    z_lo, z_hi = roi.get("z_lo"), roi.get("z_hi")
+    if z_lo is not None:
+        keep_v &= v[:, 2] >= float(z_lo)
+    if z_hi is not None:
+        keep_v &= v[:, 2] <= float(z_hi)
     n_cropped = int((~keep_v).sum())
     if n_cropped:
         mesh.update_faces(keep_v[mesh.faces].all(axis=1))
@@ -278,21 +420,23 @@ def run(ctx: "StageContext") -> dict:
     mcfg = ctx.cfg.resolved_mesh
     paths.mesh.mkdir(parents=True, exist_ok=True)
 
-    if not paths.dense_fused.exists():
-        ctx.warn("no dense/fused.ply: mesh skipped")
+    src_cloud = paths.dense_clean
+    if not src_cloud.exists():
+        src_cloud = paths.dense_fused
+        if src_cloud.exists():
+            ctx.warn("dense/clean.ply missing; meshing from uncleaned dense/fused.ply")
+    if not src_cloud.exists():
+        ctx.warn("no dense/clean.ply or dense/fused.ply: mesh skipped")
         return _empty_metrics("none", perf_counter() - t0)
 
-    enu_xyz, enu_rgb = _load_ply_xyz_rgb(paths.dense_fused)
-    fused_sfm = paths.dense / "fused_sfm.ply"
+    enu_xyz, enu_rgb = _load_ply_xyz_rgb(src_cloud)
     cli = colmap_cli.probe()
-    want_poisson = choose_poisson(mcfg.method, fused_sfm.exists(), cli["available"],
+    want_poisson = choose_poisson(mcfg.method, src_cloud.exists(), cli["available"],
                                   len(enu_xyz), mcfg.min_points_for_poisson)
 
-    tr_path = paths.georef_transform
-    s = R = t = None
-    if tr_path.exists():
-        tr = json.loads(tr_path.read_text(encoding="utf-8"))
-        s, R, t = float(tr["s"]), np.asarray(tr["R"], float), np.asarray(tr["t"], float)
+    roi: dict = {}
+    if paths.dense_roi.exists():
+        roi = json.loads(paths.dense_roi.read_text(encoding="utf-8"))
 
     method = "heightfield"
     depth = trim = None
@@ -300,17 +444,20 @@ def run(ctx: "StageContext") -> dict:
     tris_raw = 0
     mesh = None
 
-    if want_poisson and s is not None:
+    if want_poisson:
         try:
-            p_ply = paths.mesh / "poisson_sfm.ply"
+            # src_cloud is already ENU with normals (from the clean stage) —
+            # poisson_mesher's output needs no coordinate transform.
+            p_ply = paths.mesh / "poisson.ply"
             t_p = perf_counter()
-            _poisson(ctx, mcfg, fused_sfm, p_ply)
+            _poisson(ctx, mcfg, src_cloud, p_ply)
             if perf_counter() - t_p > mcfg.max_seconds:
                 raise RuntimeError(f"poisson_mesher exceeded {mcfg.max_seconds:.0f}s")
             m = trimesh.load(p_ply, process=False, force="mesh")
             tris_raw = len(m.faces)
-            m.vertices = _transform_vertices(m.vertices, s, R, t)
-            m, cropped = _crop_far_vertices(m, enu_xyz, 3.0 * _median_nn(enu_xyz))
+            m, cropped = _crop_to_roi(m, roi)
+            m, far_cropped = _crop_far_vertices(m, enu_xyz, 3.0 * _median_nn(enu_xyz))
+            cropped += far_cropped
             m = _clean_topology(m)
             m, comps = _drop_small_components(m, 0.01)
             m = _clean_topology(m)
@@ -327,7 +474,23 @@ def run(ctx: "StageContext") -> dict:
         if len(mesh.faces) > mcfg.max_tris:
             mesh = _decimate(mesh, mcfg.max_tris, enu_xyz, enu_rgb)
 
+    # ---- view-based vertex colours (nearest-point colours are the fallback) --
     vcol = np.asarray(mesh.visual.vertex_colors)[:, :3].astype(np.uint8)
+    colour_view_coverage = 0.0
+    ws_dir = paths.dense / "ws"
+    if ws_dir.exists():
+        try:
+            scale = 1.0
+            if paths.georef_transform.exists():
+                scale = float(json.loads(
+                    paths.georef_transform.read_text(encoding="utf-8"))["s"])
+            view_colors, covered = view_based_vertex_colors(
+                mesh.vertices, mesh.vertex_normals, ws_dir, paths.georef_cameras, scale)
+            vcol[covered] = view_colors[covered]
+            colour_view_coverage = round(float(covered.mean()), 4) if len(covered) else 0.0
+        except Exception as exc:                       # noqa: BLE001
+            ctx.warn(f"view-based vertex colouring failed ({type(exc).__name__}: {exc}); "
+                     f"keeping nearest-point colours")
     mesh.visual.vertex_colors = vcol
     # binary PLY *with faces* (util.ply is vertex-only) — exports read this back.
     paths.mesh_ply.write_bytes(mesh.export(file_type="ply", encoding="binary"))
@@ -336,10 +499,14 @@ def run(ctx: "StageContext") -> dict:
     except Exception as exc:                           # noqa: BLE001
         ctx.warn(f"mesh preview failed ({type(exc).__name__}: {exc})")
 
-    ctx.log.info("mesh: method=%s tris %d->%d verts=%d comps_removed=%d cropped=%d",
-                 method, tris_raw, len(mesh.faces), len(mesh.vertices), comps, cropped)
+    ctx.log.info("mesh: method=%s tris %d->%d verts=%d comps_removed=%d cropped=%d "
+                 "colour_view_coverage=%.1f%%",
+                 method, tris_raw, len(mesh.faces), len(mesh.vertices), comps, cropped,
+                 colour_view_coverage * 100.0)
     return {
         "method": method,
+        "roi_kind": roi.get("kind"),
+        "colour_view_coverage": colour_view_coverage,
         "poisson_depth": depth,
         "trim": trim,
         "triangles_raw": int(tris_raw),

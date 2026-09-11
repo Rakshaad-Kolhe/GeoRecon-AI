@@ -20,9 +20,11 @@ from georecon.stages import masking as _masking_stage
 from georecon.stages import sfm as _sfm_stage
 from georecon.stages import georef as _georef_stage
 from georecon.stages import dense as _dense_stage
+from georecon.stages import clean as _clean_stage
 from georecon.stages import mesh as _mesh_stage
 from georecon.stages import export as _export_stage
 from georecon.stages import validate as _validate_stage
+from georecon.util.version import code_version
 
 # Ordered stage registry. Later PRs append their stages here.
 STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
@@ -32,6 +34,7 @@ STAGES: list[tuple[str, Callable[["StageContext"], dict]]] = [
     ("sfm", _sfm_stage.run),
     ("georef", _georef_stage.run),
     ("dense", _dense_stage.run),
+    ("clean", _clean_stage.run),
     ("mesh", _mesh_stage.run),
     ("export", _export_stage.run),
     ("validate", _validate_stage.run),
@@ -92,6 +95,8 @@ class JobPaths:
     georef_residuals: Path
     dense: Path
     dense_fused: Path
+    dense_clean: Path
+    dense_roi: Path
     mesh: Path
     mesh_ply: Path
     mesh_preview: Path
@@ -123,6 +128,8 @@ class JobPaths:
             georef_residuals=r / "georef" / "residuals.csv",
             dense=r / "dense",
             dense_fused=r / "dense" / "fused.ply",
+            dense_clean=r / "dense" / "clean.ply",
+            dense_roi=r / "dense" / "roi.json",
             mesh=r / "mesh",
             mesh_ply=r / "mesh" / "mesh.ply",
             mesh_preview=r / "report" / "mesh_preview.png",
@@ -212,7 +219,8 @@ def _rebuild_metrics(paths: JobPaths, names: list[str]) -> None:
         entry["seconds"] = seconds
         stages[n] = entry
         total += seconds
-    _atomic_write_json(paths.metrics_json, {"stages": stages, "total_seconds": round(total, 3)})
+    _atomic_write_json(paths.metrics_json, {"stages": stages, "total_seconds": round(total, 3),
+                                            "code_version": code_version()})
 
 
 def run_job(job_dir, cfg: JobConfig) -> dict:

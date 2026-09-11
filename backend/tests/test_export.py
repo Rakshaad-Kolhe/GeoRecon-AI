@@ -16,7 +16,7 @@ from georecon.stages.export import (
     _write_geotiff,
     _write_las,
 )
-from georecon.util.ply import write_ply
+from georecon.util.ply import read_ply, write_ply
 
 
 def test_las_roundtrip_crs_and_coords(tmp_path):
@@ -125,6 +125,42 @@ def _write_export_job(tmp_path, *, georeferenced, n_pts=200, n_cams=5):
         "inlier": [1] * n_cams,
     }).to_csv(paths.georef_residuals, index=False)
     return paths
+
+
+def test_export_web_lod_budgets_enforced(tmp_path, monkeypatch):
+    """With small monkeypatched budgets: web/pointcloud.ply is capped,
+    web/pointcloud_hi.ply appears only because the clean cloud exceeds the
+    budget, and web/mesh.ply is decimated below the tri cap — independent of
+    the full-resolution outputs/ files."""
+    monkeypatch.setattr(export, "WEB_MAX_POINTS", 200)
+    monkeypatch.setattr(export, "WEB_HI_MAX_POINTS", 600)
+    monkeypatch.setattr(export, "WEB_MAX_TRIS", 500)
+
+    paths = _write_export_job(tmp_path, georeferenced=True, n_pts=1000)
+    big = trimesh.creation.icosphere(subdivisions=3)             # 1280 faces
+    big.visual.vertex_colors = np.tile([10, 20, 30, 255], (len(big.vertices), 1)).astype(np.uint8)
+    paths.mesh_ply.write_bytes(big.export(file_type="ply", encoding="binary"))
+
+    monkeypatch.setattr(pipeline, "STAGES", [("export", export.run)])
+    pipeline.run_job(tmp_path / "job", JobConfig(video_path="x"))
+
+    web_cloud = read_ply(paths.outputs_web / "pointcloud.ply")
+    assert len(web_cloud["x"]) <= 200
+
+    assert (paths.outputs_web / "pointcloud_hi.ply").exists()
+    hi_cloud = read_ply(paths.outputs_web / "pointcloud_hi.ply")
+    assert len(hi_cloud["x"]) <= 600
+
+    web_mesh = trimesh.load(paths.outputs_web / "mesh.ply", process=False, force="mesh")
+    assert len(web_mesh.faces) <= 500
+
+    meta = json.loads((paths.outputs_web / "meta.json").read_text())
+    assert meta["lod"]["points"] == len(web_cloud["x"])
+    assert meta["lod"]["points_hi"] == len(hi_cloud["x"])
+    assert meta["lod"]["tris"] == len(web_mesh.faces)
+    # full outputs/ stay uncapped
+    assert meta["points"] == 1000
+    assert meta["triangles"] == 1280
 
 
 def test_export_georeferenced_writes_geotiffs_and_crs_las(tmp_path, monkeypatch):
