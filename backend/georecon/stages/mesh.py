@@ -87,26 +87,28 @@ def _bilinear_sample(img: np.ndarray, u: np.ndarray, v: np.ndarray):
     return wa * Ia + wb * Ib + wc * Ic + wd * Id, valid
 
 
+# Number of best candidate views to blend per vertex (weighted median)
+_TOP_K = 3
+
+
 def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: Path,
                              cameras_enu_csv: Path, scale: float,
-                             tol_frac: float = 0.02, facing_thr: float = -0.2):
-    """Per-vertex colour by projecting into every undistorted camera in
-    ``ws_dir`` (``dense/ws``): a camera is a candidate where the vertex
-    projects inside the image, faces the camera
-    (``normal . viewing_direction < facing_thr``), and passes an occlusion
-    test against that camera's geometric depth map (within ``tol_frac`` of
-    the sampled depth, converted from SfM units via ``scale``). Among
-    candidates, picks max ``cos(angle) / distance``. Vectorised per camera.
+                             tol_frac: float = 0.02, facing_thr: float = -0.2,
+                             top_k: int = _TOP_K, apply_gain: bool = True):
+    """Per-vertex colour using multi-view weighted-median blending.
+
+    For each vertex up to ``_TOP_K`` unoccluded candidate views are collected,
+    weighted by ``w = cos(theta) / dist``.  Before blending, each camera's
+    sampled colours are gain-compensated: the per-channel median of (sampled /
+    multi-view median) over shared vertices is clamped to [0.7, 1.4] and
+    applied so that exposure differences between images are removed.  The
+    final colour is the per-channel weighted median of the compensated samples.
 
     Camera extrinsics come from ``georef/cameras_enu.csv`` (E,N,U + quaternion
     already in the mesh's ENU/local frame — same values georef.py wrote);
-    only intrinsics (+ image/depth files) come from ``dense/ws``. Mixing the
-    *raw SfM-frame* pose from ``dense/ws/sparse`` with ENU-frame vertices
-    would silently put every vertex behind every camera.
+    only intrinsics (+ image/depth files) come from ``dense/ws``.
 
-    Returns ``(colors uint8 (N,3), covered bool (N,))`` — ``covered`` is
-    False (colour untouched, caller supplies a fallback) where no camera
-    qualified.
+    Returns ``(colors uint8 (N,3), covered bool (N,))``.
     """
     n = len(vertices)
     colors = np.zeros((n, 3), np.uint8)
@@ -133,7 +135,11 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
     Nrm = np.asarray(normals, float)
     nlen = np.linalg.norm(Nrm, axis=1, keepdims=True)
     Nrm = np.divide(Nrm, nlen, out=np.zeros_like(Nrm), where=nlen > 1e-9)
-    best_score = np.full(n, -np.inf)
+
+    # Accumulate per-vertex: list of (score, rgb_float) from each qualified camera.
+    # We store only the top-K per vertex to cap memory.
+    top_scores = [np.full(n, -np.inf) for _ in range(top_k)]
+    top_rgb = [np.zeros((n, 3), float) for _ in range(top_k)]
 
     for row in cams.itertuples():
         name = row.name
@@ -160,15 +166,15 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
             continue
         uv = np.zeros((n, 2))
         uv[front] = cam.img_from_cam(Xc[front])
-        u, v = uv[:, 0], uv[:, 1]
+        u, v_px = uv[:, 0], uv[:, 1]
         h, w = img.shape[:2]
         facing = (Nrm @ view_dir) < facing_thr
-        cand = front & facing & (u >= 0) & (u < w - 1) & (v >= 0) & (v < h - 1)
+        cand = front & facing & (u >= 0) & (u < w - 1) & (v_px >= 0) & (v_px < h - 1)
         if not cand.any():
             continue
 
         cand_idx = np.flatnonzero(cand)
-        d_sampled, dvalid = _bilinear_sample(depth, u[cand_idx], v[cand_idx])
+        d_sampled, dvalid = _bilinear_sample(depth, u[cand_idx], v_px[cand_idx])
         good = dvalid & (d_sampled > 1e-6) & (np.abs(z[cand_idx] - d_sampled) <= tol_frac * d_sampled)
         cand_idx = cand_idx[good]
         if not len(cand_idx):
@@ -178,15 +184,182 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
         frontal = -(Nrm[cand_idx] @ view_dir)
         score = frontal / np.maximum(dist, 1e-6)
 
-        take = score > best_score[cand_idx]
-        take_idx = cand_idx[take]
-        if len(take_idx):
-            col_bgr, _ = _bilinear_sample(img.astype(float), u[take_idx], v[take_idx])
-            colors[take_idx] = np.clip(col_bgr[:, ::-1], 0, 255).astype(np.uint8)   # BGR -> RGB
-            best_score[take_idx] = score[take]
-            covered[take_idx] = True
+        col_bgr, _ = _bilinear_sample(img.astype(float), u[cand_idx], v_px[cand_idx])
+        col_rgb = col_bgr[:, ::-1]   # BGR -> RGB
+
+        # Insert into per-vertex top-K heap (slot 0 = best, slot K-1 = weakest kept)
+        for k in range(top_k):
+            take = score > top_scores[k][cand_idx]
+            if not take.any():
+                break
+            take_idx = cand_idx[take]
+            # push current slot-k down to slot k+1 before overwriting
+            if k + 1 < top_k:
+                for kk in range(top_k - 1, k, -1):
+                    top_scores[kk][take_idx] = top_scores[kk - 1][take_idx]
+                    top_rgb[kk][take_idx] = top_rgb[kk - 1][take_idx]
+            top_scores[k][take_idx] = score[take]
+            top_rgb[k][take_idx] = col_rgb[take]
+            # remaining candidates (score <= slot-k) might still belong in lower slots
+            cand_idx = cand_idx[~take]
+            score = score[~take]
+            col_rgb = col_rgb[~take]
+            if not len(cand_idx):
+                break
+
+    # ---- per-image gain compensation (shared across all vertices) ----------------
+    # Stack collected candidates: shape (K, N, 3); only slots with score > -inf are valid.
+    stacked = np.stack(top_rgb, axis=0)            # (K, N, 3)
+    valid_k = np.stack([s > -np.inf for s in top_scores], axis=0)  # (K, N)
+
+    any_valid = valid_k.any(axis=0)               # (N,)
+    if any_valid.any():
+        if apply_gain and top_k > 1:
+            # Global multi-view median per vertex channel (over valid slots)
+            mv_med = np.zeros((n, 3), float)
+            for c in range(3):
+                ch = stacked[:, :, c]                  # (K, N)
+                for vi in np.flatnonzero(any_valid):
+                    vals = ch[valid_k[:, vi], vi]
+                    mv_med[vi, c] = float(np.median(vals))
+
+            # Per-camera gain = median of (sampled / mv_med) over vertices where
+            # both the slot and mv_med are valid. Apply per-slot.
+            for k in range(top_k):
+                vk = valid_k[k]                        # (N,) — vertices filled in slot k
+                if not vk.any():
+                    continue
+                ref = mv_med[vk]                       # (Mv, 3)
+                smp = stacked[k][vk]                  # (Mv, 3)
+                denom = np.where(ref > 1e-3, ref, np.nan)
+                ratio = np.where(ref > 1e-3, smp / denom, np.nan)
+                # per-channel median gain across vertices covered by this slot
+                gain = np.nanmedian(ratio, axis=0)     # (3,)
+                gain = np.clip(gain, 0.7, 1.4)
+                top_rgb[k][vk] = np.clip(smp * gain, 0, 255)
+
+        # ---- weighted median per vertex ----------------------------------------
+        for vi in np.flatnonzero(any_valid):
+            w_all = np.array([top_scores[k][vi] for k in range(top_k)])
+            c_all = np.array([top_rgb[k][vi] for k in range(top_k)])
+            valid_k_vi = w_all > -np.inf
+            w = w_all[valid_k_vi]
+            c = c_all[valid_k_vi]
+            w = w / w.sum()
+            # weighted median: sort by value per channel, cumsum weights, pick >= 0.5
+            out = np.zeros(3, float)
+            for ch in range(3):
+                order = np.argsort(c[:, ch])
+                cum = np.cumsum(w[order])
+                out[ch] = c[order][cum >= 0.5][0, ch]
+            colors[vi] = np.clip(out, 0, 255).astype(np.uint8)
+            covered[vi] = True
 
     return colors, covered
+
+
+def compute_colour_error(
+    mesh,
+    ws_dir: Path,
+    cameras_enu_csv: Path,
+    scale: float,
+    keyframes: int = 5,
+    n_samples: int = 2000,
+    seed: int = 42,
+) -> float | None:
+    """Mean absolute RGB error (0-255) between mesh vertex colour and source
+    pixels over ``n_samples`` random unoccluded vertices across ``keyframes``
+    fixed keyframes.  Returns None if the workspace is unavailable.
+
+    Uses the same camera selection + occlusion logic as
+    ``view_based_vertex_colors`` so the metric is directly comparable across
+    methods.  ``keyframes`` fixed images are picked evenly from the registered
+    camera list so the same frames are always used for all methods.
+    """
+    sparse = ws_dir / "sparse"
+    images_dir = ws_dir / "images"
+    depth_dir = ws_dir / "stereo" / "depth_maps"
+    if not (sparse.exists() and images_dir.exists() and depth_dir.exists()
+            and cameras_enu_csv.exists()):
+        return None
+
+    import cv2
+    import pandas as pd
+    import pycolmap
+
+    from georecon.util.sim3 import quat_wxyz_to_R
+
+    recon = pycolmap.Reconstruction(str(sparse))
+    intrinsics = {im.name: recon.cameras[im.camera_id] for im in recon.images.values()}
+    cams = pd.read_csv(cameras_enu_csv)
+    cams = cams[cams["registered"] == 1].reset_index(drop=True)
+    if len(cams) == 0:
+        return None
+
+    # Pick keyframe indices evenly spaced
+    kf_idx = np.linspace(0, len(cams) - 1, min(keyframes, len(cams)), dtype=int)
+    kf_rows = [cams.iloc[i] for i in kf_idx]
+
+    V = np.asarray(mesh.vertices, float)
+    Nrm = np.asarray(mesh.vertex_normals, float)
+    nlen = np.linalg.norm(Nrm, axis=1, keepdims=True)
+    Nrm = np.divide(Nrm, nlen, out=np.zeros_like(Nrm), where=nlen > 1e-9)
+    vcol = np.asarray(mesh.visual.vertex_colors)[:, :3].astype(float)
+
+    rng = np.random.default_rng(seed)
+    errors: list[float] = []
+    tol_frac = 0.02
+    facing_thr = -0.2
+
+    for row in kf_rows:
+        name = row["name"]
+        cam = intrinsics.get(name)
+        img_path = images_dir / name
+        depth_path = depth_dir / f"{name}.geometric.bin"
+        if cam is None or not img_path.exists() or not depth_path.exists():
+            continue
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+        try:
+            depth = read_depth_array(depth_path).astype(float) * float(scale)
+        except (ValueError, OSError):
+            continue
+
+        cam_center = np.array([row["E"], row["N"], row["U"]], float)
+        M = quat_wxyz_to_R(row["qw"], row["qx"], row["qy"], row["qz"])
+        view_dir = M[2, :]
+
+        Xc = (V - cam_center) @ M.T
+        z = Xc[:, 2]
+        front = z > 1e-6
+        if not front.any():
+            continue
+        n = len(V)
+        uv = np.zeros((n, 2))
+        uv[front] = cam.img_from_cam(Xc[front])
+        u, v_px = uv[:, 0], uv[:, 1]
+        h, w = img.shape[:2]
+        facing = (Nrm @ view_dir) < facing_thr
+        cand = front & facing & (u >= 0) & (u < w - 1) & (v_px >= 0) & (v_px < h - 1)
+        if not cand.any():
+            continue
+        cand_idx = np.flatnonzero(cand)
+        d_sampled, dvalid = _bilinear_sample(depth, u[cand_idx], v_px[cand_idx])
+        good = dvalid & (d_sampled > 1e-6) & (np.abs(z[cand_idx] - d_sampled) <= tol_frac * d_sampled)
+        cand_idx = cand_idx[good]
+        if not len(cand_idx):
+            continue
+
+        # Sample up to n_samples from unoccluded vertices
+        sample_size = min(n_samples, len(cand_idx))
+        sel = rng.choice(cand_idx, sample_size, replace=False)
+        img_col, _ = _bilinear_sample(img.astype(float), u[sel], v_px[sel])
+        img_rgb = img_col[:, ::-1]   # BGR -> RGB
+        mesh_rgb = vcol[sel]
+        errors.append(float(np.mean(np.abs(img_rgb - mesh_rgb))))
+
+    return float(np.mean(errors)) if errors else None
 
 
 def _crop_to_roi(mesh, roi: dict):
@@ -478,14 +651,18 @@ def run(ctx: "StageContext") -> dict:
     vcol = np.asarray(mesh.visual.vertex_colors)[:, :3].astype(np.uint8)
     colour_view_coverage = 0.0
     ws_dir = paths.dense / "ws"
+    scale = 1.0
+    if paths.georef_transform.exists():
+        try:
+            scale = float(json.loads(
+                paths.georef_transform.read_text(encoding="utf-8"))["s"])
+        except Exception:  # noqa: BLE001
+            pass
     if ws_dir.exists():
         try:
-            scale = 1.0
-            if paths.georef_transform.exists():
-                scale = float(json.loads(
-                    paths.georef_transform.read_text(encoding="utf-8"))["s"])
             view_colors, covered = view_based_vertex_colors(
-                mesh.vertices, mesh.vertex_normals, ws_dir, paths.georef_cameras, scale)
+                mesh.vertices, mesh.vertex_normals, ws_dir, paths.georef_cameras, scale,
+                top_k=mcfg.colour_views, apply_gain=mcfg.colour_gain)
             vcol[covered] = view_colors[covered]
             colour_view_coverage = round(float(covered.mean()), 4) if len(covered) else 0.0
         except Exception as exc:                       # noqa: BLE001
@@ -499,14 +676,25 @@ def run(ctx: "StageContext") -> dict:
     except Exception as exc:                           # noqa: BLE001
         ctx.warn(f"mesh preview failed ({type(exc).__name__}: {exc})")
 
+    # ---- shared colour_error metric -----------------------------------------
+    colour_error: float | None = None
+    if ws_dir.exists():
+        try:
+            colour_error = compute_colour_error(
+                mesh, ws_dir, paths.georef_cameras, scale)
+        except Exception as exc:                       # noqa: BLE001
+            ctx.warn(f"colour_error metric failed ({type(exc).__name__}: {exc})")
+
     ctx.log.info("mesh: method=%s tris %d->%d verts=%d comps_removed=%d cropped=%d "
-                 "colour_view_coverage=%.1f%%",
+                 "colour_view_coverage=%.1f%% colour_error=%s",
                  method, tris_raw, len(mesh.faces), len(mesh.vertices), comps, cropped,
-                 colour_view_coverage * 100.0)
+                 colour_view_coverage * 100.0,
+                 f"{colour_error:.2f}" if colour_error is not None else "n/a")
     return {
         "method": method,
         "roi_kind": roi.get("kind"),
         "colour_view_coverage": colour_view_coverage,
+        "colour_error": colour_error,
         "poisson_depth": depth,
         "trim": trim,
         "triangles_raw": int(tris_raw),

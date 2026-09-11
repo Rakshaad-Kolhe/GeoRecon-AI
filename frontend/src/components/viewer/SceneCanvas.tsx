@@ -9,11 +9,18 @@ import { MeasureLayer } from './MeasureLayer'
 import { MeshModel } from './MeshModel'
 import { PointCloud, type AssetLoadState } from './PointCloud'
 import { Trajectory } from './Trajectory'
-import type { CameraApi, ViewState } from './types'
+import type { BackgroundMode, CameraApi, ViewState } from './types'
 
 export interface SceneInfo {
   mppx: number
   northRad: number
+}
+
+/** Maps BackgroundMode to canvas clear colours used for colour evaluation. */
+const BG_COLORS: Record<BackgroundMode, string> = {
+  dark: '#0f172a',
+  grey: '#1e2126',
+  light: '#f1f5f9',
 }
 
 interface Props {
@@ -38,15 +45,27 @@ interface Props {
   onMeshLoadState: (s: AssetLoadState) => void
 }
 
-function bboxMetrics(meta: ViewerMeta) {
-  const { min, max } = meta.bbox_enu
-  const diag = new THREE.Vector3(
-    max[0] - min[0],
-    max[1] - min[1],
-    max[2] - min[2],
-  ).length()
-  const groundTarget = new THREE.Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, min[2])
-  return { diag, groundTarget }
+function bboxMetrics(meta?: Partial<ViewerMeta>) {
+  // Prefer ROI bbox if available, fall back to full bbox, then unit cube
+  const box = meta?.roi_enu ?? meta?.bbox_enu
+  const min = box?.min ?? [-1, -1, -1]
+  const max = box?.max ?? [1, 1, 1]
+  const center = new THREE.Vector3(
+    (min[0] + max[0]) / 2,
+    (min[1] + max[1]) / 2,
+    (min[2] + max[2]) / 2,
+  )
+  const diag = Math.max(
+    0.1,
+    new THREE.Vector3(
+      max[0] - min[0],
+      max[1] - min[1],
+      max[2] - min[2],
+    ).length(),
+  )
+  // Ground target: centre of bbox at lowest Z
+  const groundTarget = new THREE.Vector3(center.x, center.y, min[2])
+  return { diag, groundTarget, center }
 }
 
 function RaycasterConfig({ threshold }: { threshold: number }) {
@@ -92,6 +111,15 @@ function SceneInfoReporter({ onSceneInfo }: { onSceneInfo: (i: SceneInfo) => voi
   return null
 }
 
+/** Syncs renderer clear colour whenever the background prop changes. */
+function RendererSetup({ bg }: { bg: BackgroundMode }) {
+  const gl = useThree((s) => s.gl)
+  useEffect(() => {
+    gl.setClearColor(BG_COLORS[bg])
+  }, [gl, bg])
+  return null
+}
+
 /** invalidate the demand-frameloop canvas whenever view/measurement state changes. */
 function InvalidateOnChange({ token }: { token: string }) {
   const invalidate = useThree((s) => s.invalidate)
@@ -124,6 +152,8 @@ export function SceneCanvas({
 }: Props) {
   const { diag, groundTarget } = useMemo(() => bboxMetrics(meta), [meta])
 
+  // 45° oblique start: approach from south-west at 45° elevation.
+  // Direction: 0.55 south, -0.95 west, 0.7 up — avoid near-grazing angles.
   const defaultPos = useMemo(() => {
     const dir = new THREE.Vector3(0.55, -0.95, 0.7).normalize()
     return groundTarget.clone().add(dir.multiplyScalar(diag * 1.15))
@@ -154,6 +184,8 @@ export function SceneCanvas({
     view.showTrajectory,
     view.material,
     view.detail,
+    view.background,
+    view.exposure,
     measureTool,
     measurements.length,
     draft?.points.length ?? 0,
@@ -173,7 +205,15 @@ export function SceneCanvas({
         far: diag * 20,
       }}
       onCreated={(state) => {
-        state.gl.setClearColor('#020617')
+        // Phase A: flat / unmodified colour pipeline
+        state.gl.toneMapping = THREE.NoToneMapping
+        state.gl.outputColorSpace = THREE.SRGBColorSpace
+        console.log(
+          '[SceneCanvas] toneMapping=%o outputColorSpace=%o',
+          state.gl.toneMapping,
+          state.gl.outputColorSpace,
+        )
+        state.gl.setClearColor(BG_COLORS[view.background])
         state.camera.up.set(0, 0, 1)
         cameraApiRef.current = {
           reset: () => rigApiRef.current?.reset(),
@@ -185,6 +225,8 @@ export function SceneCanvas({
       <PerformanceMonitor bounds={() => [45, 60]} />
       <AdaptiveDpr pixelated />
       {debug && <Stats className="!absolute" />}
+
+      <RendererSetup bg={view.background} />
 
       <ambientLight intensity={0.55} />
       <hemisphereLight args={[0xffffff, 0x384049, 0.9]} />
@@ -209,6 +251,7 @@ export function SceneCanvas({
           worldSize={pointWorldSize}
           visible={cloudVisible}
           pickable={cloudPickable}
+          exposure={view.exposure}
           onPick={onPick}
           onHover={onHover}
           onDoubleClick={onDoublePick}
@@ -226,6 +269,7 @@ export function SceneCanvas({
           polygonOffset={both}
           visible={meshVisible}
           pickable={meshPickable}
+          exposure={view.exposure}
           onPick={onPick}
           onHover={onHover}
           onDoubleClick={onDoublePick}
