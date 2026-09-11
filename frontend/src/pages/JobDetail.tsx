@@ -9,6 +9,7 @@ import { ResultsTabs } from '../components/ResultsTabs'
 import { StateBadge } from '../components/StateBadge'
 import { Stepper } from '../components/Stepper'
 import { elapsedSeconds, formatSeconds } from '../lib/format'
+import { scaleInfoFor } from '../lib/scale'
 
 export function JobDetail() {
   const { id } = useParams<{ id: string }>()
@@ -53,9 +54,16 @@ export function JobDetail() {
   const total = active
     ? elapsedSeconds(job.created_at)
     : elapsedSeconds(job.created_at, job.updated_at)
+  const scale = scaleInfoFor(job)
+  const unscaled = job.metrics?.stages?.georef !== undefined && !scale.georeferenced
 
   return (
     <div className="space-y-4">
+      {unscaled && (
+        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+          {scale.reason}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <Link to="/" className="text-sm text-slate-500 hover:text-slate-300">
           ← jobs

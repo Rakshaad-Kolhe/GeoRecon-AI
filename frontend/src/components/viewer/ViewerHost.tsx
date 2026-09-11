@@ -8,6 +8,7 @@ import {
   type Measurement,
   type Vec3,
 } from '../../lib/measure'
+import { scaleInfoFor } from '../../lib/scale'
 import { ErrorBoundary } from './ErrorBoundary'
 import { MeasureSidebar } from './MeasureSidebar'
 import { MeasureToolbar } from './MeasureToolbar'
@@ -62,6 +63,7 @@ export function ViewerHost({ job, mode, active }: Props) {
   }, [meta, job.job_id])
 
   const dedupeDist = meta ? Math.max(0.5, bboxDiag(meta) * 0.006) : 1
+  const scale = useMemo(() => scaleInfoFor(job, meta), [job, meta])
 
   const onReady = useCallback(() => setReady(true), [])
   const onSceneInfo = useCallback((i: SceneInfo) => setInfo(i), [])
@@ -74,12 +76,12 @@ export function ViewerHost({ job, mode, active }: Props) {
   const closeArea = useCallback(() => {
     setDraft((d) => {
       if (tool === 'area' && d.length >= 3 && meta) {
-        setItems((prev) => [...prev, buildMeasurement('area', d, meta)])
+        setItems((prev) => [...prev, buildMeasurement('area', d, meta, scale)])
         return []
       }
       return d
     })
-  }, [tool, meta])
+  }, [tool, meta, scale])
 
   const closeAreaRef = useRef(closeArea)
   useEffect(() => {
@@ -100,7 +102,7 @@ export function ViewerHost({ job, mode, active }: Props) {
     (p: Vec3) => {
       if (!tool || !meta) return
       if (tool === 'inspect') {
-        setItems((prev) => [...prev, buildMeasurement('inspect', [p], meta)])
+        setItems((prev) => [...prev, buildMeasurement('inspect', [p], meta, scale)])
         return
       }
       if (tool === 'area') {
@@ -118,13 +120,16 @@ export function ViewerHost({ job, mode, active }: Props) {
       setDraft((d) => {
         const next = [...d, p]
         if (next.length >= need) {
-          setItems((prev) => [...prev, buildMeasurement(tool, next.slice(0, need), meta)])
+          setItems((prev) => [
+            ...prev,
+            buildMeasurement(tool, next.slice(0, need), meta, scale),
+          ])
           return []
         }
         return next
       })
     },
-    [tool, meta, dedupeDist],
+    [tool, meta, dedupeDist, scale],
   )
 
   const onTool = useCallback((t: MeasureTool | null) => {
@@ -193,6 +198,7 @@ export function ViewerHost({ job, mode, active }: Props) {
             info={info}
             loading={!ready && !error}
             error={error}
+            unitsLabel={scale.unitsLabel}
           />
         </div>
 

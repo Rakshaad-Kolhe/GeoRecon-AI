@@ -26,6 +26,7 @@ interface MockJob {
   stageIdx: number
   substep: number
   seeded: boolean
+  georeferenced: boolean
 }
 
 // Plausible per-stage metrics for freshly created jobs.
@@ -44,6 +45,7 @@ const SYNTH: Record<StageName, StageMetrics> = {
   },
   georef: {
     seconds: 1,
+    georeferenced: true,
     branch: 'sim3',
     rmse_h: 0.9,
     rmse_v: 1.1,
@@ -116,6 +118,7 @@ const REAL_DEMO_METRICS: Metrics = {
       seconds: 25,
     },
     georef: {
+      georeferenced: true,
       branch: 'sim3',
       rmse_h: 0.83,
       rmse_v: 0.96,
@@ -142,11 +145,12 @@ const REAL_DEMO_METRICS: Metrics = {
   total_seconds: 427,
 }
 
-// real-demo's metrics come from the real run's report/metrics.json when it has
-// been dropped into public/mock/real-demo/ (see PR 13 setup); otherwise fall back.
+// mock-real-demo's metrics come from the real run's report/metrics.json when
+// it has been dropped into public/mock/mock-real-demo/ (see PR 13 setup);
+// otherwise fall back.
 let realDemoMetricsP: Promise<Metrics> | null = null
 function loadRealDemoMetrics(): Promise<Metrics> {
-  realDemoMetricsP ??= fetch('/mock/real-demo/metrics.json')
+  realDemoMetricsP ??= fetch('/mock/mock-real-demo/metrics.json')
     .then((r) => (r.ok ? (r.json() as Promise<Metrics>) : REAL_DEMO_METRICS))
     .catch(() => REAL_DEMO_METRICS)
   return realDemoMetricsP
@@ -154,13 +158,14 @@ function loadRealDemoMetrics(): Promise<Metrics> {
 
 function seed(store: Map<string, MockJob>) {
   const demoCreated = Date.now() - 1000 * 60 * 12
-  store.set('real-demo', {
+  store.set('mock-real-demo', {
     createdMs: demoCreated,
     stageIdx: STAGE_NAMES.length,
     substep: 0,
     seeded: true,
+    georeferenced: true,
     detail: {
-      job_id: 'real-demo',
+      job_id: 'mock-real-demo',
       state: 'done',
       stage: 'validate',
       progress: 1,
@@ -174,13 +179,14 @@ function seed(store: Map<string, MockJob>) {
   })
 
   const badCreated = Date.now() - 1000 * 60 * 5
-  store.set('bad-telemetry', {
+  store.set('mock-bad-telemetry', {
     createdMs: badCreated,
     stageIdx: STAGE_NAMES.indexOf('georef'),
     substep: 0,
     seeded: true,
+    georeferenced: false,
     detail: {
-      job_id: 'bad-telemetry',
+      job_id: 'mock-bad-telemetry',
       state: 'failed',
       stage: 'georef',
       progress: STAGE_NAMES.indexOf('georef') / STAGE_NAMES.length,
@@ -219,12 +225,29 @@ function tick() {
       }
     }
 
+    const georefOverride = job.georeferenced
+      ? undefined
+      : {
+          georef: {
+            ...SYNTH.georef,
+            georeferenced: false,
+            branch: 'none',
+            rmse_h: 0,
+            rmse_v: 0,
+            holdout_rmse_h: 0,
+            holdout_rmse_v: 0,
+            scale_drift_pct: 0,
+            inliers: 0,
+            pairs: 0,
+          },
+        }
+
     if (job.stageIdx >= STAGE_NAMES.length) {
       d.state = 'done'
       d.stage = 'validate'
       d.progress = 1
       d.message = 'pipeline complete — 9/9 stages'
-      d.metrics = buildMetrics(STAGE_NAMES.length)
+      d.metrics = buildMetrics(STAGE_NAMES.length, georefOverride)
     } else {
       d.stage = STAGE_NAMES[job.stageIdx]
       d.progress =
@@ -232,7 +255,7 @@ function tick() {
           ((job.stageIdx + job.substep / SUBSTEPS) / STAGE_NAMES.length) * 1000,
         ) / 1000
       d.message = `${d.stage}: working (${job.substep + 1}/${SUBSTEPS})`
-      d.metrics = buildMetrics(job.stageIdx)
+      d.metrics = buildMetrics(job.stageIdx, georefOverride)
     }
     d.updated_at = nowIso()
   }
@@ -389,7 +412,7 @@ export const mockApi: Api = {
       throw err
     }
     const detail = clone(job.detail)
-    if (id === 'real-demo') detail.metrics = await loadRealDemoMetrics()
+    if (id === 'mock-real-demo') detail.metrics = await loadRealDemoMetrics()
     return delay(detail)
   },
 
@@ -404,7 +427,7 @@ export const mockApi: Api = {
   },
 
   async getFiles(id) {
-    if (id === 'real-demo') {
+    if (id === 'mock-real-demo') {
       return delay(filesFromMetrics(await loadRealDemoMetrics()) ?? MOCK_FILES)
     }
     return delay(MOCK_FILES)
@@ -418,13 +441,14 @@ export const mockApi: Api = {
         onUploadProgress?.(p)
         if (p >= 1) {
           clearInterval(bump)
-          const id = `${slug(input.video.name)}-${(++seq).toString(36)}`
+          const id = `mock-${slug(input.video.name)}-${(++seq).toString(36)}`
           const createdMs = Date.now()
           store.set(id, {
             createdMs,
             stageIdx: 0,
             substep: 0,
             seeded: false,
+            georeferenced: !!input.telemetry,
             detail: {
               job_id: id,
               state: 'queued',

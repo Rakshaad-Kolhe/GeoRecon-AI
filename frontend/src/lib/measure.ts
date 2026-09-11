@@ -1,4 +1,5 @@
 import type { ViewerMeta } from '../api/types'
+import type { ScaleInfo } from './scale'
 
 export type Vec3 = { x: number; y: number; z: number }
 export type MeasureTool = 'distance' | 'area' | 'height' | 'inspect'
@@ -15,7 +16,7 @@ export const TOOL_HINT: Record<MeasureTool, string> = {
   distance: 'click 2 points — 3D, horizontal and ΔZ',
   area: 'click vertices, then Enter or double-click to close',
   height: 'click 2 points — vertical difference',
-  inspect: 'click a point — ENU and lat / lon / alt',
+  inspect: 'click a point — local X/Y/Z (+ lat/lon/alt if georeferenced)',
 }
 
 export const TOOL_POINTS: Record<MeasureTool, number> = {
@@ -74,13 +75,14 @@ export function bboxFootprintLatLng(meta: ViewerMeta): [number, number][] {
   })
 }
 
-const m = (v: number) => `${v.toFixed(3)} m`
-
 export function buildMeasurement(
   tool: MeasureTool,
   points: Vec3[],
   meta: ViewerMeta,
+  scale: ScaleInfo,
 ): Measurement {
+  const u = scale.unitsLabel
+  const val = (v: number) => `${v.toFixed(3)} ${u}`
   const id = `${tool}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`
   let label = ''
   let detail: [string, string][] = []
@@ -89,37 +91,39 @@ export function buildMeasurement(
     const [a, b] = points
     const total = d3(a, b)
     detail = [
-      ['3D distance', m(total)],
-      ['Horizontal', m(dXY(a, b))],
-      ['ΔZ', m(b.z - a.z)],
+      ['3D distance', val(total)],
+      ['Horizontal', val(dXY(a, b))],
+      ['ΔZ', val(b.z - a.z)],
     ]
-    label = `Distance ${total.toFixed(2)} m`
+    label = `Distance ${total.toFixed(2)} ${u}`
   } else if (tool === 'height') {
     const [a, b] = points
     const dz = Math.abs(b.z - a.z)
     detail = [
-      ['Height difference', m(dz)],
-      ['Z (a)', m(a.z)],
-      ['Z (b)', m(b.z)],
+      ['Height difference', val(dz)],
+      ['Z (a)', val(a.z)],
+      ['Z (b)', val(b.z)],
     ]
-    label = `Height ${dz.toFixed(2)} m`
+    label = `Height ${dz.toFixed(2)} ${u}`
   } else if (tool === 'area') {
     const area = polygonAreaXY(points)
     detail = [
-      ['Area (XY)', `${area.toFixed(2)} m²`],
-      ['Perimeter', m(perimeterXY(points))],
+      ['Area (XY)', `${area.toFixed(2)} ${u}²`],
+      ['Perimeter', val(perimeterXY(points))],
       ['Vertices', String(points.length)],
     ]
-    label = `Area ${area.toFixed(1)} m²`
+    label = `Area ${area.toFixed(1)} ${u}²`
   } else {
     const p = points[0]
-    const g = enuToGeodetic(p, meta.origin)
-    detail = [
-      ['E / N / U', `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)} m`],
-      ['Latitude', g.lat.toFixed(7)],
-      ['Longitude', g.lon.toFixed(7)],
-      ['Altitude', `${g.alt.toFixed(2)} m (${meta.height_ref})`],
-    ]
+    detail = [['E / N / U', `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)} ${u}`]]
+    if (scale.georeferenced) {
+      const g = enuToGeodetic(p, meta.origin)
+      detail.push(
+        ['Latitude', g.lat.toFixed(7)],
+        ['Longitude', g.lon.toFixed(7)],
+        ['Altitude', `${g.alt.toFixed(2)} m (${meta.height_ref})`],
+      )
+    }
     label = `Point ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`
   }
 

@@ -28,6 +28,7 @@ export function NewJob() {
   const [preset, setPreset] = useState<Preset>('balanced')
   const [maskDynamic, setMaskDynamic] = useState(false)
   const [offset, setOffset] = useState('0')
+  const [altitude, setAltitude] = useState('')
 
   const [submitting, setSubmitting] = useState(false)
   const [uploadFrac, setUploadFrac] = useState(0)
@@ -52,6 +53,7 @@ export function NewJob() {
           preset,
           mask_dynamic: maskDynamic,
           telemetry_offset_s: Number(offset) || 0,
+          assumed_altitude_m: altitude.trim() ? Number(altitude) : undefined,
         },
         setUploadFrac,
       )
@@ -119,6 +121,22 @@ export function NewJob() {
               onChange={(e) => setOffset(e.target.value)}
               className="w-32 rounded border border-slate-800 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-cyan-400"
             />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Approx. flight altitude (m)
+            </span>
+            <input
+              type="number"
+              step="1"
+              min="0"
+              value={altitude}
+              onChange={(e) => setAltitude(e.target.value)}
+              className="w-32 rounded border border-slate-800 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-cyan-400"
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">
+              used only when no telemetry is uploaded
+            </span>
           </label>
         </div>
       </Panel>

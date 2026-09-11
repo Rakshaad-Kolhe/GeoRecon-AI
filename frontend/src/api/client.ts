@@ -74,6 +74,9 @@ const realApi: Api = {
       form.append('preset', input.preset)
       form.append('mask_dynamic', String(input.mask_dynamic))
       form.append('telemetry_offset_s', String(input.telemetry_offset_s))
+      if (input.assumed_altitude_m != null) {
+        form.append('assumed_altitude_m', String(input.assumed_altitude_m))
+      }
 
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/jobs')
@@ -126,8 +129,10 @@ const realApi: Api = {
   },
 }
 
-// default "1" in .env.development, "0" in .env.production; `npm run dev:real`
-// runs with --mode real (.env.real sets it to "0").
+// "0" in .env.development and .env.production, so `npm run dev` talks to the
+// real backend by default; `npm run dev:mock` runs with --mode mock
+// (.env.mock sets it to "1"). realApi never falls back to mockApi — errors
+// always surface as UI errors instead of silently swapping data sources.
 export const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === '1'
 
 export const api: Api = USE_MOCKS ? mockApi : realApi

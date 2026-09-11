@@ -7,6 +7,7 @@ interface Props {
   info: SceneInfo | null
   loading: boolean
   error: string | null
+  unitsLabel: string
 }
 
 function niceLength(raw: number): number {
@@ -16,13 +17,22 @@ function niceLength(raw: number): number {
   return m * p
 }
 
-export function SceneOverlay({ points, triangles, info, loading, error }: Props) {
+export function SceneOverlay({
+  points,
+  triangles,
+  info,
+  loading,
+  error,
+  unitsLabel,
+}: Props) {
   let barPx = 0
   let barLabel = '—'
   if (info && info.mppx > 0 && Number.isFinite(info.mppx)) {
     const len = niceLength(info.mppx * 90)
+    // km rollup only makes sense for real metres, not relative/unscaled units.
+    barLabel =
+      unitsLabel === 'm' && len >= 1000 ? `${len / 1000} km` : `${len} ${unitsLabel}`
     barPx = Math.min(240, len / info.mppx)
-    barLabel = len >= 1000 ? `${len / 1000} km` : `${len} m`
   }
 
   return (

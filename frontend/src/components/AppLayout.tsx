@@ -1,10 +1,12 @@
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { HealthChip } from './HealthChip'
+import { MockBanner } from './MockBanner'
 
 export function AppLayout() {
   const { pathname } = useLocation()
   return (
     <div className="min-h-screen">
+      <MockBanner />
       <header className="border-b border-slate-800 bg-slate-900">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <Link to="/" className="flex items-center gap-2">
