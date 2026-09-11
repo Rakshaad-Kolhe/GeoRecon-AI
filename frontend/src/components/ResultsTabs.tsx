@@ -63,7 +63,7 @@ export function ResultsTabs({ job }: { job: JobDetail }) {
             </div>
           )}
 
-          {tab === 'Metrics' && <MetricsPanel metrics={job.metrics} />}
+          {tab === 'Metrics' && <MetricsPanel job={job} />}
           {tab === 'Map' && <MapPanel jobId={job.job_id} />}
           {tab === 'Downloads' && <DownloadsPanel jobId={job.job_id} />}
         </>

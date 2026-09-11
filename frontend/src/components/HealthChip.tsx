@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { formatCodeVersion } from '../lib/version'
 
 export function HealthChip() {
   const { data, isError } = useQuery({
@@ -27,6 +28,9 @@ export function HealthChip() {
         COLMAP CUDA {colmapOk ? '✓' : '✗'}
       </span>
       <span>queue {data.queue_len}</span>
+      {data.code_version && (
+        <span className="text-slate-600">v{formatCodeVersion(data.code_version)}</span>
+      )}
     </span>
   )
 }

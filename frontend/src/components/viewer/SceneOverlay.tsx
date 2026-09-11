@@ -1,13 +1,19 @@
 import { formatInt } from '../../lib/format'
 import type { SceneInfo } from './SceneCanvas'
 
+export interface AssetStatus {
+  label: string
+  progress: number
+  error: string | null
+}
+
 interface Props {
   points: number
   triangles: number
   info: SceneInfo | null
-  loading: boolean
-  error: string | null
   unitsLabel: string
+  assets: AssetStatus[]
+  onRetry: (label: string) => void
 }
 
 function niceLength(raw: number): number {
@@ -17,14 +23,7 @@ function niceLength(raw: number): number {
   return m * p
 }
 
-export function SceneOverlay({
-  points,
-  triangles,
-  info,
-  loading,
-  error,
-  unitsLabel,
-}: Props) {
+export function SceneOverlay({ points, triangles, info, unitsLabel, assets, onRetry }: Props) {
   let barPx = 0
   let barLabel = '—'
   if (info && info.mppx > 0 && Number.isFinite(info.mppx)) {
@@ -34,6 +33,8 @@ export function SceneOverlay({
       unitsLabel === 'm' && len >= 1000 ? `${len / 1000} km` : `${len} ${unitsLabel}`
     barPx = Math.min(240, len / info.mppx)
   }
+
+  const pending = assets.filter((a) => a.error || a.progress < 1)
 
   return (
     <div className="pointer-events-none absolute inset-0 select-none">
@@ -61,16 +62,31 @@ export function SceneOverlay({
         <span className="font-mono text-[10px] text-slate-400">{barLabel}</span>
       </div>
 
-      {(loading || error) && (
+      {pending.length > 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            className={`rounded border px-3 py-2 text-sm ${
-              error
-                ? 'border-red-500/40 bg-red-500/10 text-red-300'
-                : 'border-slate-800 bg-slate-950/90 text-slate-400'
-            }`}
-          >
-            {error ? `viewer error: ${error}` : 'loading 3D model…'}
+          <div className="space-y-2 rounded border border-slate-800 bg-slate-950/90 px-3 py-2 text-sm">
+            {pending.map((a) => (
+              <div key={a.label} className="pointer-events-auto flex items-center gap-2">
+                {a.error ? (
+                  <>
+                    <span className="text-red-300">
+                      {a.label} failed: {a.error}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onRetry(a.label)}
+                      className="rounded border border-red-500/50 px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/10"
+                    >
+                      Retry
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-slate-400">
+                    loading {a.label}… {Math.round(a.progress * 100)}%
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

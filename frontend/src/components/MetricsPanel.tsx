@@ -1,10 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { api } from '../api/client'
-import type { Metrics, ValidateSummary } from '../api/types'
+import type { JobDetail, Metrics, ValidateSummary } from '../api/types'
 import { STAGE_NAMES } from '../api/types'
 import { formatInt, formatMeters, formatPct, formatSeconds } from '../lib/format'
 import { getValidateSummary, mnum, stageMetric } from '../lib/metrics'
+import { scaleInfoFor } from '../lib/scale'
+
+const fitLabel = (v: number | undefined, georeferenced: boolean) =>
+  georeferenced ? formatMeters(v) : 'unscaled'
+const holdoutLabel = (v: number | undefined, georeferenced: boolean) =>
+  georeferenced ? formatMeters(v) : 'n/a'
 
 const PROJECTION_TARGET_S = 900
 
@@ -93,17 +99,23 @@ function Projection({ summary }: { summary: ValidateSummary }) {
   )
 }
 
-function SummaryView({ summary }: { summary: ValidateSummary }) {
+function SummaryView({
+  summary,
+  georeferenced,
+}: {
+  summary: ValidateSummary
+  georeferenced: boolean
+}) {
   const a = summary.accuracy
   const c = summary.completeness
   const perStage: [string, number][] = Object.entries(summary.speed.per_stage_s ?? {})
   return (
     <div className="space-y-5">
       <Group title="Accuracy">
-        <Stat label="holdout RMSE h" value={formatMeters(a.holdout_rmse_h)} />
-        <Stat label="holdout RMSE v" value={formatMeters(a.holdout_rmse_v)} />
-        <Stat label="fit RMSE h" value={formatMeters(a.rmse_h)} />
-        <Stat label="fit RMSE v" value={formatMeters(a.rmse_v)} />
+        <Stat label="holdout RMSE h" value={holdoutLabel(a.holdout_rmse_h, georeferenced)} />
+        <Stat label="holdout RMSE v" value={holdoutLabel(a.holdout_rmse_v, georeferenced)} />
+        <Stat label="fit RMSE h" value={fitLabel(a.rmse_h, georeferenced)} />
+        <Stat label="fit RMSE v" value={fitLabel(a.rmse_v, georeferenced)} />
         <Stat
           label="inliers / pairs"
           value={
@@ -112,10 +124,13 @@ function SummaryView({ summary }: { summary: ValidateSummary }) {
               : `${formatInt(a.inliers)} / ${formatInt(a.pairs)}`
           }
         />
-        <Stat label="scale drift" value={formatPct(a.scale_drift_pct, 2)} />
+        <Stat
+          label="scale drift"
+          value={georeferenced ? formatPct(a.scale_drift_pct, 2) : 'n/a'}
+        />
         <Stat label="reproj error" value={a.mean_reproj_px?.toFixed(2) ?? '—'} />
         <Stat label="excluded frames" value={formatInt(a.excluded_images)} />
-        <Stat label="branch" value={a.branch ?? '—'} />
+        <Stat label="branch" value={georeferenced ? a.branch ?? '—' : 'unscaled'} />
       </Group>
 
       <Group title="Completeness">
@@ -135,7 +150,13 @@ function SummaryView({ summary }: { summary: ValidateSummary }) {
   )
 }
 
-function LegacyView({ metrics }: { metrics?: Metrics }) {
+function LegacyView({
+  metrics,
+  georeferenced,
+}: {
+  metrics?: Metrics
+  georeferenced: boolean
+}) {
   const g = stageMetric(metrics, 'georef')
   const s = stageMetric(metrics, 'sfm')
   const d = stageMetric(metrics, 'dense')
@@ -150,15 +171,24 @@ function LegacyView({ metrics }: { metrics?: Metrics }) {
   return (
     <div className="space-y-5">
       <Group title="Accuracy">
-        <Stat label="holdout RMSE h" value={formatMeters(mnum(g, 'holdout_rmse_h'))} />
-        <Stat label="holdout RMSE v" value={formatMeters(mnum(g, 'holdout_rmse_v'))} />
-        <Stat label="fit RMSE h" value={formatMeters(mnum(g, 'rmse_h'))} />
-        <Stat label="fit RMSE v" value={formatMeters(mnum(g, 'rmse_v'))} />
+        <Stat
+          label="holdout RMSE h"
+          value={holdoutLabel(mnum(g, 'holdout_rmse_h'), georeferenced)}
+        />
+        <Stat
+          label="holdout RMSE v"
+          value={holdoutLabel(mnum(g, 'holdout_rmse_v'), georeferenced)}
+        />
+        <Stat label="fit RMSE h" value={fitLabel(mnum(g, 'rmse_h'), georeferenced)} />
+        <Stat label="fit RMSE v" value={fitLabel(mnum(g, 'rmse_v'), georeferenced)} />
         <Stat
           label="inliers / pairs"
           value={inl == null && pairs == null ? '—' : `${formatInt(inl)} / ${formatInt(pairs)}`}
         />
-        <Stat label="scale drift" value={formatPct(mnum(g, 'scale_drift_pct'), 2)} />
+        <Stat
+          label="scale drift"
+          value={georeferenced ? formatPct(mnum(g, 'scale_drift_pct'), 2) : 'n/a'}
+        />
       </Group>
 
       <Group title="Completeness">
@@ -172,7 +202,13 @@ function LegacyView({ metrics }: { metrics?: Metrics }) {
   )
 }
 
-export function MetricsPanel({ metrics }: { metrics?: Metrics }) {
+export function MetricsPanel({ job }: { job: JobDetail }) {
+  const { metrics } = job
+  const { georeferenced } = scaleInfoFor(job)
   const summary = getValidateSummary(metrics)
-  return summary ? <SummaryView summary={summary} /> : <LegacyView metrics={metrics} />
+  return summary ? (
+    <SummaryView summary={summary} georeferenced={georeferenced} />
+  ) : (
+    <LegacyView metrics={metrics} georeferenced={georeferenced} />
+  )
 }

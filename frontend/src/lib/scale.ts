@@ -15,7 +15,14 @@ export interface ScaleInfo {
 export function scaleInfoFor(job: JobDetail, meta?: ViewerMeta | null): ScaleInfo {
   const georefStage = job.metrics?.stages?.georef as { georeferenced?: boolean } | undefined
   const georeferenced = meta?.georeferenced ?? georefStage?.georeferenced ?? true
-  const unitsLabel = meta?.units ?? (georeferenced ? 'm' : 'rel. units')
+  // meta.units is only trustworthy once the backend also sends meta.georeferenced —
+  // exports from before that contract landed hardcode "m" even when unscaled.
+  const unitsLabel =
+    meta?.georeferenced != null && meta.units
+      ? meta.units
+      : georeferenced
+        ? 'm'
+        : 'rel. units'
   const reason = 'Not georeferenced — no GPS telemetry'
   return { georeferenced, unitsLabel, reason }
 }
