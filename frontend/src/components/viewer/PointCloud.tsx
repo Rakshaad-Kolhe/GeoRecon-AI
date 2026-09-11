@@ -91,14 +91,14 @@ export function PointCloud({
 
     const rgb = new Float32Array(n * 3)
     const src = geom.attributes.color
-    // PLY colours are sRGB 0..1; convert to linear so the renderer's own
-    // linear->sRGB output pass doesn't double-encode them (128 must stay ~128).
+    // PLY colours are already converted to linear by PLYLoader (via SRGBColorSpace);
+    // do not apply srgbToLinear again to avoid double conversion (128 must stay ~128).
     // exposure is applied here as a linear multiplier (clamped to [0,1]).
     for (let i = 0; i < n; i++) {
       if (src) {
-        rgb[i * 3] = Math.min(1, srgbToLinear(src.getX(i)) * exposure)
-        rgb[i * 3 + 1] = Math.min(1, srgbToLinear(src.getY(i)) * exposure)
-        rgb[i * 3 + 2] = Math.min(1, srgbToLinear(src.getZ(i)) * exposure)
+        rgb[i * 3] = Math.min(1, src.getX(i) * exposure)
+        rgb[i * 3 + 1] = Math.min(1, src.getY(i) * exposure)
+        rgb[i * 3 + 2] = Math.min(1, src.getZ(i) * exposure)
       } else {
         const v = Math.min(1, srgbToLinear(0.8) * exposure)
         rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v

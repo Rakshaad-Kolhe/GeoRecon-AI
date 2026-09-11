@@ -3,11 +3,16 @@
  *
  * Access: http://localhost:5173/colortest
  *
- * Renders three WebGL quads via react-three-fiber and runs gl.readPixels
+ * Renders WebGL quads and a real PLY fixture through the same PLYLoader →
+ * MeshModel / PointCloud code path the viewer uses, running gl.readPixels
  * to verify that:
- *   1. Vertex-coloured 128-grey quad reads back 128 ± 3 per channel
- *   2. Texture-mapped 128-grey quad reads back 128 ± 3 per channel
- *   3. Pure-red vertex-coloured quad reads back R≈255, G≈0, B≈0
+ *   1. Hand-built vertex-coloured 128-grey quad reads back 128 ± 3
+ *   2. Hand-built texture-mapped 128-grey quad reads back 128 ± 3
+ *   3. Hand-built pure-red vertex-coloured quad reads back [255, 0, 0]
+ *   4. PLYLoader → MeshModel real path: 128-grey reads back 128 ± 3
+ *   5. PLYLoader → MeshModel real path: pure red reads back [255, 0, 0]
+ *   6. PLYLoader → PointCloud real path: 128-grey reads back 128 ± 3
+ *   7. PLYLoader → PointCloud real path: pure red reads back [255, 0, 0]
  *
  * Results are displayed in a table and in the browser console.
  * Green = pass, red = fail.
@@ -17,26 +22,35 @@ import { Canvas, useThree } from '@react-three/fiber'
 import { useEffect, useState } from 'react'
 import * as THREE from 'three'
 import { srgbToLinear } from '../lib/colormaps'
+import { usePlyGeometry } from '../lib/loadPly'
 
 // -------------------------------------------------------------------------- //
-// readback helper
+// readback helpers
 // -------------------------------------------------------------------------- //
-function readCentrePixel(
+function readPixelAt(
   renderer: THREE.WebGLRenderer,
-  width: number,
-  height: number,
+  x: number,
+  y: number,
 ): [number, number, number] {
   const buf = new Uint8Array(4)
   const gl = renderer.getContext()
   gl.readPixels(
-    Math.floor(width / 2),
-    Math.floor(height / 2),
+    Math.round(x),
+    Math.round(y),
     1, 1,
     gl.RGBA,
     gl.UNSIGNED_BYTE,
     buf,
   )
   return [buf[0], buf[1], buf[2]]
+}
+
+function readCentrePixel(
+  renderer: THREE.WebGLRenderer,
+  width: number,
+  height: number,
+): [number, number, number] {
+  return readPixelAt(renderer, width / 2, height / 2)
 }
 
 // -------------------------------------------------------------------------- //
@@ -55,16 +69,25 @@ interface TestResult {
 
 function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
   const { gl, size, scene, camera } = useThree()
+  const plyState = usePlyGeometry('/test-fixtures/tiny_test.ply', true, runId)
 
   useEffect(() => {
+    if (plyState.status !== 'ready') return
+
     // Give React a frame to mount and render
     const raf = requestAnimationFrame(() => {
       // Force a single render of the current scene
       gl.render(scene, camera)
 
       const results: TestResult[] = []
+      const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 20)
+      ortho.position.set(0, 0, 5)
+      ortho.lookAt(0, 0, 0)
+      ortho.updateProjectionMatrix()
+      const w = size.width || gl.domElement.width || 256
+      const h = size.height || gl.domElement.height || 256
 
-      // --- 1. Grey vertex-coloured quad ---
+      // --- 1. Hand-built grey vertex-coloured quad ---
       const greyVertScene = new THREE.Scene()
       const greyVertGeo = new THREE.PlaneGeometry(2, 2)
       const n = greyVertGeo.attributes.position.count
@@ -78,21 +101,17 @@ function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
       })
       greyVertScene.add(new THREE.Mesh(greyVertGeo, greyVertMat))
 
-      const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-      const w = size.width || gl.domElement.width || 256
-      const h = size.height || gl.domElement.height || 256
-
       gl.render(greyVertScene, ortho)
       const p1 = readCentrePixel(gl, w, h)
       const pass1 = p1.every((c) => Math.abs(c - 128) <= 3)
       results.push({
-        label: '128-grey vertex-coloured quad',
+        label: 'Hand-built 128-grey vertex quad',
         pixel: p1,
         expected: '[128±3, 128±3, 128±3]',
         pass: pass1,
       })
 
-      // --- 2. Grey textured quad ---
+      // --- 2. Hand-built grey textured quad ---
       const greyTexData = new Uint8Array([128, 128, 128, 255])
       const greyTex = new THREE.DataTexture(greyTexData, 1, 1, THREE.RGBAFormat)
       greyTex.colorSpace = THREE.SRGBColorSpace
@@ -104,13 +123,13 @@ function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
       const p2 = readCentrePixel(gl, w, h)
       const pass2 = p2.every((c) => Math.abs(c - 128) <= 3)
       results.push({
-        label: '128-grey textured quad',
+        label: 'Hand-built 128-grey textured quad',
         pixel: p2,
         expected: '[128±3, 128±3, 128±3]',
         pass: pass2,
       })
 
-      // --- 3. Pure red vertex-coloured quad ---
+      // --- 3. Hand-built pure red vertex quad ---
       const redScene = new THREE.Scene()
       const redGeo = new THREE.PlaneGeometry(2, 2)
       const nRed = redGeo.attributes.position.count
@@ -127,17 +146,101 @@ function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
       const p3 = readCentrePixel(gl, w, h)
       const pass3 = p3[0] > 240 && p3[1] < 15 && p3[2] < 15
       results.push({
-        label: 'Pure-red vertex-coloured quad',
+        label: 'Hand-built pure-red vertex quad',
         pixel: p3,
         expected: '[255, 0, 0]',
         pass: pass3,
+      })
+
+      // --- Real path tests using tiny_test.ply ---
+      // tiny_test.ply was parsed by PLYLoader (which converts sRGB -> linear in attributes.color).
+      // The viewer's MeshModel and PointCloud code extracts src = geom.attributes.color
+      // and passes src.getX/Y/Z directly (without a second srgbToLinear).
+      const plyGeom = plyState.geometry
+      const plyN = plyGeom.attributes.position.count
+      const plyRgb = new Float32Array(plyN * 3)
+      const plySrc = plyGeom.attributes.color
+      for (let i = 0; i < plyN; i++) {
+        if (plySrc) {
+          plyRgb[i * 3 + 0] = Math.min(1, plySrc.getX(i))
+          plyRgb[i * 3 + 1] = Math.min(1, plySrc.getY(i))
+          plyRgb[i * 3 + 2] = Math.min(1, plySrc.getZ(i))
+        }
+      }
+
+      // --- 4 & 5. PLYLoader -> MeshModel real path ---
+      const meshGeom = plyGeom.clone()
+      meshGeom.setAttribute('color', new THREE.BufferAttribute(plyRgb, 3))
+      const meshMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })
+      const meshScene = new THREE.Scene()
+      meshScene.add(new THREE.Mesh(meshGeom, meshMat))
+      gl.render(meshScene, ortho)
+
+      // Sample bottom-left (grey triangle) and top-right (red triangle)
+      const p4Grey = readPixelAt(gl, w * 0.25, h * 0.25)
+      const pass4Grey = p4Grey.every((c) => Math.abs(c - 128) <= 3)
+      results.push({
+        label: 'PLYLoader → MeshModel: 128-grey (real path)',
+        pixel: p4Grey,
+        expected: '[128±3, 128±3, 128±3]',
+        pass: pass4Grey,
+      })
+
+      const p4Red = readPixelAt(gl, w * 0.75, h * 0.75)
+      const pass4Red = p4Red[0] > 240 && p4Red[1] < 15 && p4Red[2] < 15
+      results.push({
+        label: 'PLYLoader → MeshModel: pure red (real path)',
+        pixel: p4Red,
+        expected: '[255, 0, 0]',
+        pass: pass4Red,
+      })
+
+      // --- 6 & 7. PLYLoader -> PointCloud real path ---
+      const cloudGeom = plyGeom.clone()
+      cloudGeom.index = null // Point clouds are unindexed vertex lists
+      cloudGeom.setAttribute('color', new THREE.BufferAttribute(plyRgb, 3))
+      const cloudMat = new THREE.PointsMaterial({
+        vertexColors: true,
+        sizeAttenuation: false,
+        size: 64,
+      })
+      cloudMat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <clipping_planes_fragment>',
+          `#include <clipping_planes_fragment>
+          vec2 pc = gl_PointCoord - vec2( 0.5 );
+          if ( dot( pc, pc ) > 0.25 ) discard;`,
+        )
+      }
+      ;(cloudMat as unknown as { toneMapped: boolean }).toneMapped = false
+
+      const cloudScene = new THREE.Scene()
+      cloudScene.add(new THREE.Points(cloudGeom, cloudMat))
+      gl.render(cloudScene, ortho)
+
+      const p5Grey = readPixelAt(gl, w * 0.25, h * 0.25)
+      const pass5Grey = p5Grey.every((c) => Math.abs(c - 128) <= 3)
+      results.push({
+        label: 'PLYLoader → PointCloud: 128-grey (real path)',
+        pixel: p5Grey,
+        expected: '[128±3, 128±3, 128±3]',
+        pass: pass5Grey,
+      })
+
+      const p5Red = readPixelAt(gl, w * 0.75, h * 0.75)
+      const pass5Red = p5Red[0] > 240 && p5Red[1] < 15 && p5Red[2] < 15
+      results.push({
+        label: 'PLYLoader → PointCloud: pure red (real path)',
+        pixel: p5Red,
+        expected: '[255, 0, 0]',
+        pass: pass5Red,
       })
 
       console.log('[ColorTest] results', results)
       onResults(results)
     })
     return () => cancelAnimationFrame(raf)
-  }, [gl, size, scene, camera, onResults, runId])
+  }, [gl, size, scene, camera, onResults, runId, plyState])
 
   // Render nothing visible; all tests run off-screen
   return null
@@ -158,7 +261,9 @@ export function ColorTest() {
           <h1 className="text-2xl font-bold text-white">Colour Pipeline Test Harness</h1>
           <p className="mt-1 text-sm text-slate-400">
             Phase A — verifies that sRGB colours pass through the WebGL pipeline without
-            double-conversion. All pixel reads use <code>gl.readPixels</code>.
+            double-conversion, testing both hand-built quads and a real PLY fixture loaded
+            via <code>PLYLoader → MeshModel/PointCloud</code>. All pixel reads use{' '}
+            <code>gl.readPixels</code>.
           </p>
         </div>
         <button
