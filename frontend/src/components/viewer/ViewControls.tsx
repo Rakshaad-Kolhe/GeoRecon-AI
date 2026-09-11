@@ -2,7 +2,7 @@ import type { ViewerMeta } from '../../api/types'
 import { formatInt } from '../../lib/format'
 import { SegmentedControl } from '../SegmentedControl'
 import { Toggle } from '../Toggle'
-import type { CameraApi, ColorMode, DetailLevel, DisplayMode, MaterialMode, ViewState } from './types'
+import type { BackgroundMode, CameraApi, ColorMode, DetailLevel, DisplayMode, MaterialMode, ViewState } from './types'
 
 interface Props {
   view: ViewState
@@ -81,6 +81,37 @@ export function ViewControls({ view, onChange, meta, cameraApi }: Props) {
           </span>
         </span>
       </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          Exposure
+        </span>
+        <span className="flex items-center gap-2">
+          <input
+            type="range"
+            min={0.6}
+            max={1.6}
+            step={0.05}
+            value={view.exposure}
+            onChange={(e) => onChange({ exposure: Number(e.target.value) })}
+            className="w-28 accent-amber-400"
+          />
+          <span className="w-8 font-mono text-xs text-slate-400">
+            {view.exposure.toFixed(2)}
+          </span>
+        </span>
+      </label>
+
+      <SegmentedControl<BackgroundMode>
+        label="BG"
+        value={view.background}
+        onChange={(v) => onChange({ background: v })}
+        options={[
+          { value: 'dark', label: '⬛' },
+          { value: 'grey', label: '⬜' },
+          { value: 'light', label: '☀' },
+        ]}
+      />
 
       <Toggle
         label="Trajectory"

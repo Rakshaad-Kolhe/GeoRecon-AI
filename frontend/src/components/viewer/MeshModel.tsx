@@ -17,6 +17,8 @@ interface Props {
   polygonOffset: boolean
   visible: boolean
   pickable: boolean
+  /** display-only linear brightness multiplier (0.6–1.6, default 1.0). */
+  exposure: number
   onPick: (p: Vec3) => void
   onHover: (p: Vec3 | null) => void
   onDoubleClick?: (p: Vec3) => void
@@ -33,6 +35,7 @@ export function MeshModel({
   polygonOffset,
   visible,
   pickable,
+  exposure,
   onPick,
   onHover,
   onDoubleClick,
@@ -63,13 +66,15 @@ export function MeshModel({
     const src = geom.attributes.color
     // PLY colours are sRGB 0..1; convert to linear so the renderer's own
     // linear->sRGB output pass doesn't double-encode them (128 must stay ~128).
+    // exposure is applied here as a linear multiplier (clamped to [0,1]).
     for (let i = 0; i < n; i++) {
       if (src) {
-        rgb[i * 3] = srgbToLinear(src.getX(i))
-        rgb[i * 3 + 1] = srgbToLinear(src.getY(i))
-        rgb[i * 3 + 2] = srgbToLinear(src.getZ(i))
+        rgb[i * 3] = Math.min(1, srgbToLinear(src.getX(i)) * exposure)
+        rgb[i * 3 + 1] = Math.min(1, srgbToLinear(src.getY(i)) * exposure)
+        rgb[i * 3 + 2] = Math.min(1, srgbToLinear(src.getZ(i)) * exposure)
       } else {
-        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = srgbToLinear(0.75)
+        const v = Math.min(1, srgbToLinear(0.75) * exposure)
+        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v
       }
     }
 
@@ -90,7 +95,7 @@ export function MeshModel({
     }
     // mesh has no per-vertex confidence — reuse height ramp so the toggle never breaks
     return { rgb, height, conf: height }
-  }, [geom])
+  }, [geom, exposure])
 
   useLayoutEffect(() => {
     if (!geom || !palettes) return
@@ -134,6 +139,7 @@ export function MeshModel({
       {material === 'photo' ? (
         <meshBasicMaterial
           vertexColors
+          toneMapped={false}
           polygonOffset={polygonOffset}
           polygonOffsetFactor={1}
           polygonOffsetUnits={1}
@@ -141,6 +147,7 @@ export function MeshModel({
       ) : (
         <meshLambertMaterial
           vertexColors
+          toneMapped={false}
           polygonOffset={polygonOffset}
           polygonOffsetFactor={1}
           polygonOffsetUnits={1}

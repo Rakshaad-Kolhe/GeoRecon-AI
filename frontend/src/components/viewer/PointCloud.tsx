@@ -20,6 +20,8 @@ interface Props {
   worldSize: number
   visible: boolean
   pickable: boolean
+  /** display-only linear brightness multiplier (0.6–1.6, default 1.0). */
+  exposure: number
   onPick: (p: Vec3) => void
   onHover: (p: Vec3 | null) => void
   onDoubleClick?: (p: Vec3) => void
@@ -46,6 +48,7 @@ export function PointCloud({
   worldSize,
   visible,
   pickable,
+  exposure,
   onPick,
   onHover,
   onDoubleClick,
@@ -71,6 +74,9 @@ export function PointCloud({
   const material = useMemo(() => {
     const m = new THREE.PointsMaterial({ vertexColors: true, sizeAttenuation: true })
     m.onBeforeCompile = roundPoints
+    // PointsMaterial doesn't expose toneMapped in r3f JSX — set it directly.
+    // This ensures the sRGB output pass won't double-encode our linear colours.
+    ;(m as unknown as { toneMapped: boolean }).toneMapped = false
     return m
   }, [])
   useEffect(() => () => material.dispose(), [material])
@@ -87,13 +93,15 @@ export function PointCloud({
     const src = geom.attributes.color
     // PLY colours are sRGB 0..1; convert to linear so the renderer's own
     // linear->sRGB output pass doesn't double-encode them (128 must stay ~128).
+    // exposure is applied here as a linear multiplier (clamped to [0,1]).
     for (let i = 0; i < n; i++) {
       if (src) {
-        rgb[i * 3] = srgbToLinear(src.getX(i))
-        rgb[i * 3 + 1] = srgbToLinear(src.getY(i))
-        rgb[i * 3 + 2] = srgbToLinear(src.getZ(i))
+        rgb[i * 3] = Math.min(1, srgbToLinear(src.getX(i)) * exposure)
+        rgb[i * 3 + 1] = Math.min(1, srgbToLinear(src.getY(i)) * exposure)
+        rgb[i * 3 + 2] = Math.min(1, srgbToLinear(src.getZ(i)) * exposure)
       } else {
-        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = srgbToLinear(0.8)
+        const v = Math.min(1, srgbToLinear(0.8) * exposure)
+        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v
       }
     }
 
@@ -125,7 +133,7 @@ export function PointCloud({
     }
 
     return { rgb, conf, height }
-  }, [geom])
+  }, [geom, exposure])
 
   useLayoutEffect(() => {
     if (!geom || !palettes) return
