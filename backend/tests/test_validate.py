@@ -1,6 +1,12 @@
+import json
+
 import numpy as np
 import pytest
 
+from georecon import pipeline
+from georecon.config import JobConfig
+from georecon.pipeline import JobPaths
+from georecon.stages import validate
 from georecon.stages.export import _conf_from_views, _write_geotiff
 from georecon.stages.validate import _coverage_pct, project_10min
 
@@ -49,3 +55,52 @@ def test_coverage_pct_grid_with_hole(tmp_path):
     cov = _coverage_pct(tmp_path / "d.tif", dense_en, cell)
     assert 98.0 <= cov <= 100.0                            # 399/400 occupied
     assert cov < 100.0
+
+
+# --------------------------------------------------------------------------- #
+def _write_validate_job(tmp_path, *, georeferenced):
+    paths = JobPaths.for_job(tmp_path / "job").ensure()
+    georef_metrics = {
+        "georeferenced": georeferenced, "branch": "sim3" if georeferenced else "none",
+        "rmse_h": 1.1, "rmse_v": 0.8, "holdout_rmse_h": 1.5, "holdout_rmse_v": 1.0,
+        "inliers": 18, "pairs": 20, "scale_drift_pct": 0.3, "seconds": 1.0,
+    }
+    stages = {
+        "ingest": {"video": {"duration_s": 20.0}, "seconds": 1.0},
+        "keyframes": {"keyframes": 30, "seconds": 2.0},
+        "masking": {"seconds": 1.0},
+        "sfm": {"registered_pct": 90.0, "mean_reproj_px": 0.8, "seconds": 3.0},
+        "georef": georef_metrics,
+        "dense": {"dense": True, "points": 1000, "points_per_m2": 50.0,
+                 "excluded_images": [], "seconds": 4.0},
+        "mesh": {"surface_area_m2": 200.0, "seconds": 1.0},
+        "export": {"dsm_cell_m": 0.5, "seconds": 1.0},
+    }
+    paths.metrics_json.write_text(json.dumps({"stages": stages, "total_seconds": 14.0}),
+                                  encoding="utf-8")
+    return paths
+
+
+def test_validate_accuracy_na_without_gps(tmp_path, monkeypatch):
+    paths = _write_validate_job(tmp_path, georeferenced=False)
+    monkeypatch.setattr(pipeline, "STAGES", [("validate", validate.run)])
+    pipeline.run_job(tmp_path / "job", JobConfig(video_path="x"))
+
+    summary = json.loads(paths.metrics_json.read_text())["stages"]["validate"]["summary"]
+    assert summary["accuracy"] == "n/a — no GPS telemetry"
+    assert summary["completeness"]["registered_pct"] == 90.0
+    assert summary["completeness"]["dense_points"] == 1000
+    assert summary["speed"]["total_seconds"] > 0
+    md = paths.summary_md.read_text(encoding="utf-8")
+    assert "n/a — no GPS telemetry" in md
+
+
+def test_validate_accuracy_present_with_gps(tmp_path, monkeypatch):
+    paths = _write_validate_job(tmp_path, georeferenced=True)
+    monkeypatch.setattr(pipeline, "STAGES", [("validate", validate.run)])
+    pipeline.run_job(tmp_path / "job", JobConfig(video_path="x"))
+
+    summary = json.loads(paths.metrics_json.read_text())["stages"]["validate"]["summary"]
+    assert isinstance(summary["accuracy"], dict)
+    assert summary["accuracy"]["holdout_rmse_h"] == 1.5
+    assert summary["completeness"]["registered_pct"] == 90.0

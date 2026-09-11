@@ -13,6 +13,7 @@ from georecon.stages.georef import (
     contiguous_folds,
     holdout_rmse,
     solve_collinear,
+    solve_none,
     solve_sim3,
 )
 from georecon.util.ply import write_ply
@@ -138,6 +139,124 @@ def test_solve_collinear_levels_tilted_ground_and_recovers_scale():
     assert np.linalg.norm((apply(s, R, t, C_sfm) - U_cam)[:, :2], axis=1).mean() < 2.0
 
 
+def _tilted_plane_scene(rng, tilt_deg, altitude, n_cams=20, n_pts=300):
+    """Cameras flying at ``altitude`` above a plane tilted ``tilt_deg`` off
+    horizontal (no GPS involved: the "SfM frame" is ground truth here)."""
+    tilt = np.radians(tilt_deg)
+    nrm = np.array([-np.sin(tilt), 0.0, np.cos(tilt)])          # plane normal
+    e1 = np.array([np.cos(tilt), 0.0, np.sin(tilt)])            # in-plane basis
+    e2 = np.array([0.0, 1.0, 0.0])
+    u = rng.uniform(-40, 40, n_pts)
+    v = rng.uniform(-40, 40, n_pts)
+    P = u[:, None] * e1 + v[:, None] * e2 + rng.normal(scale=0.05, size=(n_pts, 3))
+    cx = np.linspace(-20, 20, n_cams)
+    C = np.column_stack([cx, np.zeros(n_cams), np.zeros(n_cams)]) + altitude * nrm
+    return C, P, nrm
+
+
+def test_solve_none_levels_tilted_plane_and_normalises_scale():
+    rng = np.random.default_rng(5)
+    C, P, nrm = _tilted_plane_scene(rng, tilt_deg=15.0, altitude=50.0)
+    cfg = GeorefCfg(plane_thr_frac=0.05, ransac_iters=400)
+
+    s, R, t, level_angle_deg, scale_source, units = solve_none(P, C, cfg, seed=0)
+
+    assert abs(level_angle_deg - 15.0) < 2.0                    # recovers the true tilt
+    lifted = R @ nrm                                            # fitted normal -> should land on +Z
+    ang = np.degrees(np.arccos(np.clip(lifted[2], -1.0, 1.0)))
+    assert ang < 2.0
+    assert scale_source == "normalised"
+    assert units == "rel. units"
+    C_out = apply(s, R, t, C)
+    assert abs(np.median(C_out[:, 2]) - 100.0) < 1.0            # normalised height
+    P_out = apply(s, R, t, P)
+    assert abs(np.median(P_out[:, 2])) < 1.0                    # ground centred at 0
+
+
+def test_solve_none_scales_from_assumed_altitude():
+    rng = np.random.default_rng(6)
+    C, P, nrm = _tilted_plane_scene(rng, tilt_deg=10.0, altitude=50.0)
+    cfg = GeorefCfg(plane_thr_frac=0.05, ransac_iters=400, assumed_altitude_m=80.0)
+
+    s, R, t, level_angle_deg, scale_source, units = solve_none(P, C, cfg, seed=0)
+
+    assert scale_source == "assumed_altitude"
+    assert units == "≈ m (from altitude)"
+    C_out = apply(s, R, t, C)
+    assert abs(np.median(C_out[:, 2]) - 80.0) < 1.0
+
+
+# --------------------------------------------------------------------------- #
+def _write_none_job(tmp_path, *, tilt_deg=15.0, altitude=50.0, n_cams=20):
+    paths = JobPaths.for_job(tmp_path / "job").ensure()
+    rng = np.random.default_rng(1)
+    C, P, _ = _tilted_plane_scene(rng, tilt_deg, altitude, n_cams=n_cams)
+    names = [f"f_{i:06d}.jpg" for i in range(n_cams)]
+
+    pd.DataFrame({
+        "name": names, "registered": [1] * n_cams,
+        "cx": C[:, 0], "cy": C[:, 1], "cz": C[:, 2],
+        "qw": [1.0] * n_cams, "qx": [0.0] * n_cams, "qy": [0.0] * n_cams, "qz": [0.0] * n_cams,
+    }).to_csv(paths.sfm / "cameras.csv", index=False)
+    pd.DataFrame({
+        "name": names, "frame_idx": range(n_cams), "t": np.arange(float(n_cams)),
+        "lat": [np.nan] * n_cams, "lon": [np.nan] * n_cams, "alt": [np.nan] * n_cams,
+        "sharpness": [1.0] * n_cams, "disp_px": [1.0] * n_cams,
+    }).to_csv(paths.frames / "frames.csv", index=False)
+    write_ply(paths.sfm / "sparse.ply", P, {
+        "red": np.zeros(len(P), np.uint8), "green": np.zeros(len(P), np.uint8),
+        "blue": np.zeros(len(P), np.uint8), "error": np.zeros(len(P), np.float32),
+        "track_len": np.ones(len(P), np.float32),
+    })
+    return paths
+
+
+def test_georef_none_branch_levels_and_normalises_end_to_end(tmp_path, monkeypatch):
+    paths = _write_none_job(tmp_path, tilt_deg=15.0, altitude=50.0)
+    monkeypatch.setattr(pipeline, "STAGES", [("georef", georef.run)])
+    pipeline.run_job(tmp_path / "job", JobConfig(video_path="x"))
+
+    m = json.loads((tmp_path / "job" / "report" / "metrics.json").read_text())["stages"]["georef"]
+    assert m["georeferenced"] is False
+    assert m["branch"] == "none"
+    assert m["scale_source"] == "normalised"
+    assert m["units"] == "rel. units"
+    assert abs(m["level_angle_deg"] - 15.0) < 2.0               # recovers the true tilt
+    assert not paths.georef_origin.exists()
+
+    tr = json.loads(paths.georef_transform.read_text())
+    assert tr["scale_source"] == "normalised"
+    s, R, t = tr["s"], np.array(tr["R"]), np.array(tr["t"])
+    cams = pd.read_csv(paths.sfm / "cameras.csv")
+    C_out = apply(s, R, t, cams[["cx", "cy", "cz"]].to_numpy())
+    assert abs(np.median(C_out[:, 2]) - 100.0) < 1.0
+    assert (paths.georef / "cameras_enu.csv").exists()
+    assert (paths.georef / "sparse_enu.ply").exists()
+
+    from georecon.util.ply import read_ply
+
+    ground = read_ply(paths.georef / "sparse_enu.ply")
+    ground_z = np.asarray(ground["z"], float)
+    assert abs(np.median(ground_z)) < 1.0                       # ground levelled to z=0
+    assert np.std(ground_z) < 5.0                                # flat, not still tilted
+
+
+def test_georef_none_branch_uses_assumed_altitude_end_to_end(tmp_path, monkeypatch):
+    paths = _write_none_job(tmp_path, tilt_deg=10.0, altitude=50.0)
+    monkeypatch.setattr(pipeline, "STAGES", [("georef", georef.run)])
+    cfg = JobConfig(video_path="x", georef=GeorefCfg(assumed_altitude_m=80.0))
+    pipeline.run_job(tmp_path / "job", cfg)
+
+    m = json.loads((tmp_path / "job" / "report" / "metrics.json").read_text())["stages"]["georef"]
+    assert m["scale_source"] == "assumed_altitude"
+    assert m["units"] == "≈ m (from altitude)"
+    tr = json.loads(paths.georef_transform.read_text())
+    s, R, t = tr["s"], np.array(tr["R"]), np.array(tr["t"])
+    cams = pd.read_csv(paths.sfm / "cameras.csv")
+    C_out = apply(s, R, t, cams[["cx", "cy", "cz"]].to_numpy())
+    assert abs(np.median(C_out[:, 2]) - 80.0) < 1.0
+
+
 # --------------------------------------------------------------------------- #
 def _write_job(tmp_path, *, with_gps):
     paths = JobPaths.for_job(tmp_path / "job").ensure()
@@ -164,15 +283,14 @@ def _write_job(tmp_path, *, with_gps):
     return paths
 
 
-def test_no_telemetry_writes_identity_transform(tmp_path, monkeypatch):
+def test_no_telemetry_is_not_georeferenced_and_writes_no_origin(tmp_path, monkeypatch):
     paths = _write_job(tmp_path, with_gps=False)
     monkeypatch.setattr(pipeline, "STAGES", [("georef", georef.run)])
     pipeline.run_job(tmp_path / "job", JobConfig(video_path="x"))
 
     m = json.loads((tmp_path / "job" / "report" / "metrics.json").read_text())["stages"]["georef"]
-    assert m["georeferenced"] is False and m["branch"] == "none" and m["scale"] == 1.0
-    tr = json.loads(paths.georef_transform.read_text())
-    assert tr["R"] == np.eye(3).tolist() and tr["t"] == [0.0, 0.0, 0.0]
+    assert m["georeferenced"] is False and m["branch"] == "none"
+    assert not paths.georef_origin.exists()
     assert (paths.georef / "cameras_enu.csv").exists()
     assert (paths.georef / "sparse_enu.ply").exists()
 
