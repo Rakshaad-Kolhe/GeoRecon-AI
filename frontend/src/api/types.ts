@@ -50,6 +50,8 @@ export type Preset = 'fast' | 'balanced' | 'accurate'
 export type JobDetail = JobStatus & {
   metrics?: Metrics
   preset?: Preset
+  /** the code_version the job's config.json was created with (feat/recon-quality). */
+  code_version?: { commit: string; dirty: boolean }
 }
 
 export interface CreateJobInput {
@@ -70,6 +72,8 @@ export interface HealthInfo {
   pycolmap_version: string
   queue_len: number
   running_job: string | null
+  /** feat/recon-quality: git commit + dirty-tree flag the backend is running. */
+  code_version?: { commit: string; dirty: boolean }
 }
 
 // GET /api/jobs/{id}/files — paths relative to outputs/.
@@ -125,4 +129,8 @@ export interface ViewerMeta {
   /** not yet emitted by the backend — fall back to a georeferenced/unscaled default. */
   units?: string
   scale_source?: string
+  /** not yet emitted by the backend — optional LOD asset description. */
+  lod?: { points: number; points_hi?: number; tris: number }
+  /** not yet emitted by the backend — region of interest, same frame as bbox_enu. */
+  roi_enu?: { min: [number, number, number]; max: [number, number, number] }
 }

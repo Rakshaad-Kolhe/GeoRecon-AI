@@ -10,6 +10,7 @@ import { StateBadge } from '../components/StateBadge'
 import { Stepper } from '../components/Stepper'
 import { elapsedSeconds, formatSeconds } from '../lib/format'
 import { scaleInfoFor } from '../lib/scale'
+import { formatCodeVersion, isStaleResult } from '../lib/version'
 
 export function JobDetail() {
   const { id } = useParams<{ id: string }>()
@@ -24,6 +25,12 @@ export function JobDetail() {
       const st = q.state.data?.state
       return st === 'queued' || st === 'running' ? 1500 : false
     },
+  })
+
+  const { data: health } = useQuery({
+    queryKey: ['health'],
+    queryFn: () => api.getHealth(),
+    staleTime: 5_000,
   })
 
   const cancelMut = useMutation({
@@ -70,6 +77,14 @@ export function JobDetail() {
         </Link>
         <h1 className="font-mono text-lg text-slate-100">{job.job_id}</h1>
         <StateBadge state={job.state} />
+        {isStaleResult(job, health) && (
+          <span
+            className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"
+            title={`job built with code_version ${formatCodeVersion(job.code_version)}, backend is now ${formatCodeVersion(health?.code_version)}`}
+          >
+            stale result
+          </span>
+        )}
         <span className="font-mono text-sm text-slate-400">
           {formatSeconds(total)} elapsed
         </span>

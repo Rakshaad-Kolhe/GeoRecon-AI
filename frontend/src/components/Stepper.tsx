@@ -1,7 +1,8 @@
 import type { JobDetail, Metrics, StageName } from '../api/types'
 import { STAGE_NAMES } from '../api/types'
-import { formatInt, formatMeters, formatPct, formatSeconds } from '../lib/format'
+import { formatInt, formatPct, formatSeconds } from '../lib/format'
 import { mnum, stageMetric } from '../lib/metrics'
+import { scaleInfoFor } from '../lib/scale'
 
 type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
@@ -13,7 +14,7 @@ const DOT: Record<StepStatus, string> = {
   skipped: 'bg-slate-600 ring-1 ring-slate-500',
 }
 
-function keyMetric(stage: StageName, metrics: Metrics | undefined): string | null {
+function keyMetric(stage: StageName, metrics: Metrics | undefined, georeferenced: boolean): string | null {
   const m = stageMetric(metrics, stage)
   if (!m) return null
   switch (stage) {
@@ -30,8 +31,9 @@ function keyMetric(stage: StageName, metrics: Metrics | undefined): string | nul
       return v == null ? null : `${formatPct(v)} registered`
     }
     case 'georef': {
+      if (!georeferenced) return 'unscaled'
       const v = mnum(m, 'holdout_rmse_h')
-      return v == null ? null : `${formatMeters(v)} holdout RMSEh`
+      return v == null ? null : `${v.toFixed(2)} m holdout RMSEh`
     }
     case 'dense': {
       const v = mnum(m, 'points')
@@ -57,13 +59,14 @@ function statusFor(job: JobDetail, i: number, curIdx: number): StepStatus {
 
 export function Stepper({ job }: { job: JobDetail }) {
   const curIdx = Math.max(0, STAGE_NAMES.indexOf(job.stage))
+  const { georeferenced } = scaleInfoFor(job)
   return (
     <ol className="space-y-0">
       {STAGE_NAMES.map((stage, i) => {
         const status = statusFor(job, i, curIdx)
         const m = stageMetric(job.metrics, stage)
         const secs = mnum(m, 'seconds')
-        const km = status === 'done' ? keyMetric(stage, job.metrics) : null
+        const km = status === 'done' ? keyMetric(stage, job.metrics, georeferenced) : null
         return (
           <li key={stage} className="flex gap-3">
             <div className="flex flex-col items-center">

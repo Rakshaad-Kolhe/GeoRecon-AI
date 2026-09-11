@@ -12,9 +12,10 @@ import { scaleInfoFor } from '../../lib/scale'
 import { ErrorBoundary } from './ErrorBoundary'
 import { MeasureSidebar } from './MeasureSidebar'
 import { MeasureToolbar } from './MeasureToolbar'
+import type { AssetLoadState } from './PointCloud'
 import { SceneCanvas, type SceneInfo } from './SceneCanvas'
-import { SceneOverlay } from './SceneOverlay'
-import { DEFAULT_VIEW_STATE, type ViewState } from './types'
+import { SceneOverlay, type AssetStatus } from './SceneOverlay'
+import { DEFAULT_VIEW_STATE, type CameraApi, type ViewState } from './types'
 import { ViewControls } from './ViewControls'
 
 interface Props {
@@ -24,6 +25,7 @@ interface Props {
 }
 
 const CANVAS_H = 480
+const NO_LOAD: AssetLoadState = { progress: 0, error: null }
 
 function bboxDiag(meta: ViewerMeta): number {
   const { min, max } = meta.bbox_enu
@@ -33,7 +35,7 @@ function bboxDiag(meta: ViewerMeta): number {
 export function ViewerHost({ job, mode, active }: Props) {
   const [meta, setMeta] = useState<ViewerMeta | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
+  const [, setReady] = useState(false)
 
   const [view, setView] = useState<ViewState>(DEFAULT_VIEW_STATE)
   const [tool, setTool] = useState<MeasureTool | null>(null)
@@ -41,6 +43,14 @@ export function ViewerHost({ job, mode, active }: Props) {
   const [items, setItems] = useState<Measurement[]>([])
   const [hover, setHover] = useState<Vec3 | null>(null)
   const [info, setInfo] = useState<SceneInfo | null>(null)
+
+  const [cloudLoad, setCloudLoad] = useState<AssetLoadState>(NO_LOAD)
+  const [meshLoad, setMeshLoad] = useState<AssetLoadState>(NO_LOAD)
+  const [cloudRetry, setCloudRetry] = useState(0)
+  const [meshRetry, setMeshRetry] = useState(0)
+
+  const cameraApiRef = useRef<CameraApi | null>(null)
+  const debug = useMemo(() => new URLSearchParams(window.location.search).has('debug'), [])
 
   // ViewerHost is keyed by job id upstream, so this runs once per job.
   useEffect(() => {
@@ -54,13 +64,24 @@ export function ViewerHost({ job, mode, active }: Props) {
     }
   }, [job.job_id])
 
+  // default mode: mesh if the export has triangles, cloud otherwise — only on
+  // first load (meta arrives async), so it never fights a display choice the
+  // user already made. Snapshotting into state (rather than deriving at
+  // render time) keeps the ViewControls toolbar highlight in sync too.
+  useEffect(() => {
+    if (!meta || !view.displayAuto) return
+    // oxlint-disable-next-line react/set-state-in-effect
+    setView((v) => ({ ...v, display: meta.triangles > 0 ? 'mesh' : 'cloud', displayAuto: false }))
+  }, [meta, view.displayAuto])
+
+  const highUrl = meta?.lod?.points_hi != null && view.detail === 'high'
   const urls = useMemo(() => {
     if (!meta) return null
     return {
-      cloud: api.fileUrl(job.job_id, 'web/pointcloud.ply'),
+      cloud: api.fileUrl(job.job_id, highUrl ? 'web/pointcloud_hi.ply' : 'web/pointcloud.ply'),
       mesh: api.fileUrl(job.job_id, 'web/mesh.ply'),
     }
-  }, [meta, job.job_id])
+  }, [meta, job.job_id, highUrl])
 
   const dedupeDist = meta ? Math.max(0.5, bboxDiag(meta) * 0.006) : 1
   const scale = useMemo(() => scaleInfoFor(job, meta), [job, meta])
@@ -89,14 +110,24 @@ export function ViewerHost({ job, mode, active }: Props) {
   }, [closeArea])
 
   useEffect(() => {
-    if (mode !== 'measure') return
+    if (!active) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDraft([])
-      else if (e.key === 'Enter') closeAreaRef.current()
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      if (mode === 'measure') {
+        if (e.key === 'Escape') return setDraft([])
+        if (e.key === 'Enter') return closeAreaRef.current()
+      }
+      if (e.key === 'r' || e.key === 'R') cameraApiRef.current?.reset()
+      else if (e.key === 't' || e.key === 'T') cameraApiRef.current?.top()
+      else if (e.key === '1') patchView({ display: 'cloud' })
+      else if (e.key === '2') patchView({ display: 'mesh' })
+      else if (e.key === '3') patchView({ display: 'both' })
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [mode])
+  }, [mode, active, patchView])
 
   const onPick = useCallback(
     (p: Vec3) => {
@@ -150,9 +181,17 @@ export function ViewerHost({ job, mode, active }: Props) {
   const measuring = mode === 'measure'
   const draftForScene = measuring && tool ? { tool, points: draft } : null
 
+  const assets: AssetStatus[] = []
+  if (view.display !== 'mesh') assets.push({ label: 'cloud', ...cloudLoad })
+  if (view.display !== 'cloud') assets.push({ label: 'mesh', ...meshLoad })
+  const onRetryAsset = useCallback((label: string) => {
+    if (label === 'cloud') setCloudRetry((n) => n + 1)
+    else setMeshRetry((n) => n + 1)
+  }, [])
+
   return (
     <div className="flex flex-col gap-3">
-      <ViewControls view={view} onChange={patchView} />
+      <ViewControls view={view} onChange={patchView} meta={meta} cameraApi={cameraApiRef} />
 
       {mode === 'measure' && (
         <MeasureToolbar
@@ -181,6 +220,7 @@ export function ViewerHost({ job, mode, active }: Props) {
                 meshUrl={urls.mesh}
                 view={view}
                 active={active}
+                debug={debug}
                 measureTool={measuring ? tool : null}
                 onPick={onPick}
                 onHover={onHover}
@@ -189,17 +229,38 @@ export function ViewerHost({ job, mode, active }: Props) {
                 measurements={items}
                 onSceneInfo={onSceneInfo}
                 onReady={onReady}
+                cameraApiRef={cameraApiRef}
+                cloudRetry={cloudRetry}
+                meshRetry={meshRetry}
+                onCloudLoadState={setCloudLoad}
+                onMeshLoadState={setMeshLoad}
               />
             </ErrorBoundary>
           )}
-          <SceneOverlay
-            points={meta?.points ?? 0}
-            triangles={meta?.triangles ?? 0}
-            info={info}
-            loading={!ready && !error}
-            error={error}
-            unitsLabel={scale.unitsLabel}
-          />
+          {meta && (
+            <SceneOverlay
+              points={meta.points}
+              triangles={meta.triangles}
+              info={info}
+              unitsLabel={scale.unitsLabel}
+              assets={assets}
+              onRetry={onRetryAsset}
+            />
+          )}
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                viewer error: {error}
+              </div>
+            </div>
+          )}
+          {!meta && !error && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="rounded border border-slate-800 bg-slate-950/90 px-3 py-2 text-sm text-slate-400">
+                loading 3D model…
+              </div>
+            </div>
+          )}
         </div>
 
         {mode === 'measure' && (
