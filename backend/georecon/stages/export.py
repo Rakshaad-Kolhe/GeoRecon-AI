@@ -22,7 +22,9 @@ from georecon.util.ply import read_ply, write_ply
 if TYPE_CHECKING:
     from georecon.pipeline import StageContext
 
-WEB_MAX_POINTS = 1_500_000
+WEB_MAX_POINTS = 1_000_000
+WEB_HI_MAX_POINTS = 3_000_000
+WEB_MAX_TRIS = 300_000
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +171,8 @@ def run(ctx: "StageContext") -> dict:
         origin = json.loads(paths.georef_origin.read_text(encoding="utf-8"))
         epsg = int(origin["utm_epsg"])
 
-    d = read_ply(paths.dense_fused)
+    dense_src = paths.dense_clean if paths.dense_clean.exists() else paths.dense_fused
+    d = read_ply(dense_src)
     xyz = np.column_stack([d["x"], d["y"], d["z"]]).astype(np.float32)
     rgb = np.column_stack([d["red"], d["green"], d["blue"]]).astype(np.uint8)
     views = np.asarray(d.get("views", np.zeros(len(xyz), np.uint8)))
@@ -180,8 +183,8 @@ def run(ctx: "StageContext") -> dict:
     def _record(p: Path):
         files[str(p.relative_to(out))] = p.stat().st_size
 
-    # ---- point cloud (ENU, all props) -------------------------------------
-    shutil.copy2(paths.dense_fused, out / "pointcloud.ply")
+    # ---- point cloud (ENU, all props; cleaned when the clean stage ran) ----
+    shutil.copy2(dense_src, out / "pointcloud.ply")
     _record(out / "pointcloud.ply")
 
     # ---- LAS (UTM, ellipsoidal Z if georeferenced; local coords, no CRS otherwise)
@@ -262,13 +265,13 @@ def run(ctx: "StageContext") -> dict:
 
     traj_enu = [[round(c[1], 3), round(c[2], 3), round(c[3], 3)] for c in cams]
 
-    # ---- web assets ---------------------------------------------------
-    w_xyz, w_cols = xyz, {"red": rgb[:, 0], "green": rgb[:, 1], "blue": rgb[:, 2],
-                          "views": views}
+    # ---- web assets (LOD-budgeted, separate from the full outputs/) -------
+    all_cols = {"red": rgb[:, 0], "green": rgb[:, 1], "blue": rgb[:, 2], "views": views}
+    w_xyz, w_cols = xyz, all_cols
     if len(w_xyz) > WEB_MAX_POINTS:
         vx = max(cell / 4, med_sp)
         while len(w_xyz) > WEB_MAX_POINTS:
-            w_xyz, w_cols = _voxel_downsample(xyz, w_cols, vx)
+            w_xyz, w_cols = _voxel_downsample(xyz, all_cols, vx)
             vx *= 1.3
     conf = _conf_from_views(w_cols["views"])
     write_ply(web / "pointcloud.ply", w_xyz.astype(np.float32), {
@@ -277,7 +280,36 @@ def run(ctx: "StageContext") -> dict:
         "blue": w_cols["blue"].astype(np.uint8),
         "conf": conf,
     })
-    shutil.copy2(paths.mesh_ply, web / "mesh.ply")
+
+    points_hi = None
+    if len(xyz) > WEB_MAX_POINTS:
+        hi_xyz, hi_cols = xyz, all_cols
+        if len(hi_xyz) > WEB_HI_MAX_POINTS:
+            vx = max(cell / 8, med_sp)
+            while len(hi_xyz) > WEB_HI_MAX_POINTS:
+                hi_xyz, hi_cols = _voxel_downsample(xyz, all_cols, vx)
+                vx *= 1.2
+        hi_conf = _conf_from_views(hi_cols["views"])
+        write_ply(web / "pointcloud_hi.ply", hi_xyz.astype(np.float32), {
+            "red": hi_cols["red"].astype(np.uint8),
+            "green": hi_cols["green"].astype(np.uint8),
+            "blue": hi_cols["blue"].astype(np.uint8),
+            "conf": hi_conf,
+        })
+        points_hi = int(len(hi_xyz))
+
+    from georecon.stages.mesh import _decimate as _mesh_decimate
+
+    web_mesh = _mesh_decimate(mesh, WEB_MAX_TRIS, np.asarray(mesh.vertices, float),
+                              np.asarray(mesh.visual.vertex_colors)[:, :3])
+    (web / "mesh.ply").write_bytes(web_mesh.export(file_type="ply", encoding="binary"))
+
+    roi_enu: list = []
+    if paths.dense_roi.exists():
+        try:
+            roi_enu = json.loads(paths.dense_roi.read_text(encoding="utf-8")).get("polygon") or []
+        except (OSError, json.JSONDecodeError):
+            roi_enu = []
 
     lo = xyz.min(axis=0).round(3).tolist()
     hi = xyz.max(axis=0).round(3).tolist()
@@ -288,12 +320,18 @@ def run(ctx: "StageContext") -> dict:
         "bbox_enu": {"min": lo, "max": hi},
         "points": int(len(xyz)),
         "triangles": int(len(mesh.faces)),
-        "median_spacing_m": round(med_sp, 4),
+        "median_spacing_m": round(_median_nn(w_xyz), 4),
         "trajectory_enu": traj_enu,
+        "roi_enu": roi_enu,
+        "lod": {"points": int(len(w_xyz)), "points_hi": points_hi,
+                "tris": int(len(web_mesh.faces))},
         "height_ref": "ellipsoidal (GPS)" if georeferenced else "n/a",
     }, indent=2), encoding="utf-8")
 
-    for p in (web / "pointcloud.ply", web / "mesh.ply", web / "meta.json"):
+    web_files = [web / "pointcloud.ply", web / "mesh.ply", web / "meta.json"]
+    if points_hi is not None:
+        web_files.append(web / "pointcloud_hi.ply")
+    for p in web_files:
         _record(p)
 
     ctx.log.info("export: %d files, DSM %s @ %.2fm", len(files),

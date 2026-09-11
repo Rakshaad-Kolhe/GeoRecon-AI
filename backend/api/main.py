@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from georecon.config import PRESETS, GeorefCfg, JobConfig, settings
+from georecon.util.version import code_version
 
 from . import jobs
 
@@ -109,6 +110,7 @@ def health() -> dict:
         "pycolmap_version": pycolmap.__version__,
         "queue_len": jobs.queue_len(),
         "running_job": jobs.running_job(),
+        "code_version": code_version(),
     }
 
 
@@ -144,12 +146,14 @@ async def create_job(
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(413, f"upload exceeds {settings.max_upload_mb} MB")
 
+    cv = code_version()
     cfg = JobConfig(
         video_path=str(v_path),
         telemetry_path=str(t_path) if t_path else None,
         preset=preset, mask_dynamic=mask_dynamic,
         telemetry_offset_s=telemetry_offset_s,
         georef=GeorefCfg(assumed_altitude_m=assumed_altitude_m),
+        code_commit=cv["commit"], code_dirty=cv["dirty"],
     )
     cfg.to_json(job_dir)
     jobs.init_status(job_dir, job_id, preset)

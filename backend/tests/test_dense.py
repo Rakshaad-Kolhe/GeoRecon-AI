@@ -125,9 +125,11 @@ def test_write_clean_model_deregisters_named_outliers(tmp_path, monkeypatch):
 
 def test_resolved_dense_preset_override_and_explicit():
     assert JobConfig(preset="fast").resolved_dense == DenseCfg(
-        num_src_images=6, window_radius=4, num_iterations=3, ref_stride=1)
+        num_src_images=6, window_radius=4, num_iterations=3, ref_stride=1,
+        min_num_pixels=3)
     assert JobConfig(preset="accurate").resolved_dense == DenseCfg(
-        num_src_images=12, window_radius=5, num_iterations=5, ref_stride=1)
+        num_src_images=12, window_radius=5, num_iterations=5, ref_stride=1,
+        min_num_pixels=5)
     # explicit --set override beats the preset
     over = DenseCfg(num_src_images=6, window_radius=4, num_iterations=4)
     assert JobConfig(preset="accurate", dense=over).resolved_dense == over

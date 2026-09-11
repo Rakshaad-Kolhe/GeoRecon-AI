@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from georecon.pipeline import StageContext
 
 # stages whose wall time scales with the number of frames / keyframes
-_FRAME_DEPENDENT = ("ingest", "keyframes", "masking", "sfm", "dense", "mesh")
+_FRAME_DEPENDENT = ("ingest", "keyframes", "masking", "sfm", "dense", "clean", "mesh")
 
 
 def project_10min(per_stage_s: dict, total_s: float, keyframes: int,
@@ -66,8 +66,8 @@ def run(ctx: "StageContext") -> dict:
     t0 = perf_counter()
     m = json.loads(paths.metrics_json.read_text(encoding="utf-8"))
     st = m["stages"]
-    g, s, dn, mh, ex = (st.get(k, {}) for k in
-                        ("georef", "sfm", "dense", "mesh", "export"))
+    g, s, dn, cl, mh, ex = (st.get(k, {}) for k in
+                            ("georef", "sfm", "dense", "clean", "mesh", "export"))
     ing = st.get("ingest", {})
     kf = st.get("keyframes", {})
 
@@ -91,7 +91,8 @@ def run(ctx: "StageContext") -> dict:
     keyframes = int(kf.get("keyframes") or 0)
     coverage = None
     if dn.get("dense") and (paths.outputs / "dsm.tif").exists():
-        d = read_ply(paths.dense_fused)
+        dense_src = paths.dense_clean if paths.dense_clean.exists() else paths.dense_fused
+        d = read_ply(dense_src)
         origin = json.loads(paths.georef_origin.read_text(encoding="utf-8"))
         lat, lon, _ = geo.enu_to_wgs84(d["x"], d["y"], d["z"], origin)
         from pyproj import Transformer
@@ -101,12 +102,17 @@ def run(ctx: "StageContext") -> dict:
         coverage = _coverage_pct(paths.outputs / "dsm.tif",
                                  np.column_stack([e, n]),
                                  float(ex.get("dsm_cell_m") or 1.0))
+    tris = mh.get("triangles")
+    area = mh.get("surface_area_m2")
+    mesh_tris_per_m2 = round(tris / area, 4) if tris and area else None
     completeness = {
         "registered_pct": s.get("registered_pct"),
         "dense_points": dn.get("points"),
         "points_per_m2": dn.get("points_per_m2"),
+        "clean_kept_pct": cl.get("kept_pct"),
         "coverage_pct": coverage,
         "mesh_surface_area_m2": mh.get("surface_area_m2"),
+        "mesh_tris_per_m2": mesh_tris_per_m2,
     }
 
     # ---- speed -----------------------------------------------------
@@ -167,8 +173,10 @@ def _write_summary_md(path: Path, summary: dict, kf10) -> None:
               f"| Registered images | {_fmt(c['registered_pct'])} % |",
               f"| Dense points | {_fmt(c['dense_points'])} |",
               f"| Points / m² | {_fmt(c['points_per_m2'])} |",
+              f"| Clean-stage kept | {_fmt(c['clean_kept_pct'])} % |",
               f"| DSM coverage | {_fmt(c['coverage_pct'])} % |",
-              f"| Mesh surface area | {_fmt(c['mesh_surface_area_m2'])} m² |", ""]
+              f"| Mesh surface area | {_fmt(c['mesh_surface_area_m2'])} m² |",
+              f"| Mesh tris / m² | {_fmt(c['mesh_tris_per_m2'])} |", ""]
 
     ps = sp["per_stage_s"]
     lines += ["## Speed", "",

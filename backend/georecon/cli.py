@@ -9,6 +9,7 @@ from pathlib import Path
 
 from georecon.config import JobConfig, PRESETS, settings
 from georecon.pipeline import run_job
+from georecon.util.version import code_version
 
 
 def _job_dir(name: str) -> Path:
@@ -81,6 +82,10 @@ def cmd_run(a: argparse.Namespace) -> int:
             telemetry_path=str(Path(a.telemetry).resolve()) if a.telemetry else None,
             telemetry_offset_s=a.telemetry_offset,
         )
+    # restamp on every run (including --force-from reruns of an existing job) so
+    # config.json always reflects the code that most recently touched this job.
+    cv = code_version()
+    base["code_commit"], base["code_dirty"] = cv["commit"], cv["dirty"]
     try:
         merged = _deep_merge(base, parse_set_overrides(a.set))
         cfg = JobConfig(**merged)

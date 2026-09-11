@@ -197,6 +197,10 @@ def run(ctx: "StageContext") -> dict:
     colmap_cli.run("stereo_fusion", {
         "workspace_path": str(ws), "workspace_format": "COLMAP",
         "input_type": "geometric", "output_path": str(fused_sfm),
+        "StereoFusion.min_num_pixels": dcfg.min_num_pixels,
+        "StereoFusion.max_reproj_error": dcfg.max_reproj_error,
+        "StereoFusion.max_depth_error": dcfg.max_depth_error,
+        "StereoFusion.max_normal_error": dcfg.max_normal_error,
     }, ctx.log)
     fusion_s = perf_counter() - t0
 
@@ -226,6 +230,7 @@ def run(ctx: "StageContext") -> dict:
         "window_radius": dcfg.window_radius,
         "num_iterations": dcfg.num_iterations,
         "ref_stride": dcfg.ref_stride,
+        "min_num_pixels": dcfg.min_num_pixels,
         "ref_images": n_ref,
         "max_image_size_used": max_size,
         "retried": retried,
