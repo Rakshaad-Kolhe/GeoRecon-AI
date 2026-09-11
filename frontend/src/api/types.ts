@@ -58,6 +58,8 @@ export interface CreateJobInput {
   preset: Preset
   mask_dynamic: boolean
   telemetry_offset_s: number
+  /** used server-side only when no telemetry is uploaded. */
+  assumed_altitude_m?: number
 }
 
 // GET /api/health (backend feat/10-api).
@@ -108,7 +110,7 @@ export interface ValidateSummary {
 }
 
 // web/meta.json emitted by backend PR 08 alongside the downsampled web assets.
-// Scene is local ENU in metres, +Z up.
+// Scene is local ENU, +Z up; metric units only when the job is georeferenced.
 export interface ViewerMeta {
   origin: { lat: number; lon: number; alt: number }
   utm_epsg: number
@@ -118,4 +120,9 @@ export interface ViewerMeta {
   median_spacing_m: number
   trajectory_enu: [number, number, number][]
   height_ref: string
+  /** not yet emitted by the backend — fall back to metrics.stages.georef.georeferenced. */
+  georeferenced?: boolean
+  /** not yet emitted by the backend — fall back to a georeferenced/unscaled default. */
+  units?: string
+  scale_source?: string
 }
