@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from georecon.config import PRESETS, JobConfig, settings
+from georecon.config import PRESETS, GeorefCfg, JobConfig, settings
 
 from . import jobs
 
@@ -119,6 +119,7 @@ async def create_job(
     preset: str = Form("fast"),
     mask_dynamic: bool = Form(True),
     telemetry_offset_s: float = Form(0.0),
+    assumed_altitude_m: float | None = Form(None),
 ) -> dict:
     if preset not in PRESETS:
         raise HTTPException(400, f"unknown preset {preset!r}; choose {sorted(PRESETS)}")
@@ -148,6 +149,7 @@ async def create_job(
         telemetry_path=str(t_path) if t_path else None,
         preset=preset, mask_dynamic=mask_dynamic,
         telemetry_offset_s=telemetry_offset_s,
+        georef=GeorefCfg(assumed_altitude_m=assumed_altitude_m),
     )
     cfg.to_json(job_dir)
     jobs.init_status(job_dir, job_id, preset)

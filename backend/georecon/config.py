@@ -114,6 +114,10 @@ class GeorefCfg(BaseModel):
     plane_thr_frac: float = 0.02       # x cloud extent -> ground-plane inlier band
     holdout_folds: int = 5
     seed: int = 0
+    # branch "none" (no telemetry) only: scale so median camera height above
+    # the levelled ground plane equals this many metres. None -> normalise to
+    # a median height of 100 (relative units, scale_source "normalised").
+    assumed_altitude_m: Optional[float] = None
 
 
 class DenseCfg(BaseModel):

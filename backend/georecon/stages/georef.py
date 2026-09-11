@@ -4,7 +4,11 @@ See CLAUDE.md "Georeferencing" / "Coordinate conventions". Processing frame is
 local ENU in metres with origin = GPS of the first registered keyframe.
 
 Branches:
-  none       - no telemetry / < 3 GPS pairs -> identity, unscaled.
+  none       - no telemetry / < 3 GPS pairs -> not georeferenced, but not
+               identity either: level the ground plane to +Z (fit_plane_ransac
+               on the sparse cloud), centre XY on the camera centroid, and
+               scale from ``assumed_altitude_m`` if given, else normalise the
+               median camera height to 100 (relative units). No origin.json.
   sim3       - GPS track well spread: robust Umeyama sim(3) with RANSAC.
   collinear  - near-straight pass (sigma2/sigma1 < collinear_ratio): roll is
                unobservable from positions, so fit the ground plane to the
@@ -38,8 +42,6 @@ from georecon.util.sim3 import (
 
 if TYPE_CHECKING:
     from georecon.pipeline import StageContext
-
-_IDENTITY = (1.0, np.eye(3), np.zeros(3))
 
 
 # --------------------------------------------------------------------------- #
@@ -87,6 +89,59 @@ def solve_collinear(C, U, pts, view_dirs, cfg: GeorefCfg, seed):
     t = np.array([t2[0], t2[1], tz])
     inl = np.linalg.norm((apply(s, R, t, C) - U)[:, :2], axis=1) <= cfg.ransac_thr_m
     return s, R, t, inl, up_agreement
+
+
+def solve_none(P, C, cfg: GeorefCfg, seed):
+    """No telemetry (or < 3 GPS pairs): level the sparse cloud's ground plane
+    to +Z, centre XY on the camera centroid, and scale from
+    ``cfg.assumed_altitude_m`` if given, else normalise the median camera
+    height above the plane to 100 (relative units). Returns
+    ``(s, R, t, level_angle_deg, scale_source, units)``.
+    """
+    P = np.asarray(P, float)
+    C = np.asarray(C, float)
+    if len(P) >= 10:
+        extent = float(np.linalg.norm(P.max(0) - P.min(0))) or 1.0
+        nrm, d, _ = fit_plane_ransac(P, cfg.plane_thr_frac * extent, cfg.ransac_iters, seed)
+        if len(C) and float(np.mean(C @ nrm + d)) < 0:      # normal must point toward the cameras
+            nrm, d = -nrm, -d
+        level_angle_deg = float(np.degrees(np.arccos(np.clip(abs(nrm[2]), -1.0, 1.0))))
+        R = align_vector_to_z(nrm)
+    else:
+        R = np.eye(3)
+        level_angle_deg = 0.0
+
+    P_r = P @ R.T if len(P) else P
+    ground_z = float(np.median(P_r[:, 2])) if len(P_r) else 0.0
+
+    if len(C):
+        C_r = C @ R.T
+        centroid_xy = C_r[:, :2].mean(0)
+        h_med = float(np.median(C_r[:, 2] - ground_z))
+    else:
+        centroid_xy = np.zeros(2)
+        h_med = 0.0
+
+    if abs(h_med) < 1e-6:
+        s = 1.0
+    elif cfg.assumed_altitude_m is not None:
+        s = float(cfg.assumed_altitude_m) / h_med
+    else:
+        s = 100.0 / h_med
+
+    t = -s * np.array([centroid_xy[0], centroid_xy[1], ground_z])
+    scale_source = "assumed_altitude" if cfg.assumed_altitude_m is not None else "normalised"
+    units = "≈ m (from altitude)" if scale_source == "assumed_altitude" else "rel. units"
+    return float(s), R, t, level_angle_deg, scale_source, units
+
+
+def _load_camera_centers(paths) -> np.ndarray:
+    """All registered SfM camera centres, regardless of GPS pairing."""
+    cams = pd.read_csv(paths.sfm / "cameras.csv")
+    reg = cams[cams["registered"] == 1]
+    if not len(reg):
+        return np.zeros((0, 3))
+    return np.column_stack([reg["cx"], reg["cy"], reg["cz"]]).astype(float)
 
 
 def _fit(branch, C, U, pts, view_dirs, cfg, seed):
@@ -209,9 +264,21 @@ def run(ctx: "StageContext") -> dict:
 
     # ---- choose + solve branch -------------------------------------------
     up_agreement = None
+    level_angle_deg = scale_source = units = None
     if not georeferenced:
-        ctx.warn("no usable GPS pairs: model will be unscaled (identity transform)")
-        s, R, t = _IDENTITY
+        if pairs:
+            ctx.warn(f"only {len(pairs)} GPS pair(s) (<3): treating as no telemetry")
+        else:
+            ctx.warn("no telemetry: model will be levelled and scaled without GPS")
+        P_all = np.zeros((0, 3))
+        sparse_path = paths.sfm / "sparse.ply"
+        if sparse_path.exists():
+            d = read_ply(sparse_path)
+            P_all = np.stack([d["x"], d["y"], d["z"]], axis=-1).astype(float)
+        if len(P_all) < 10:
+            ctx.warn("not enough sparse points for a ground-plane fit (<10); skipping levelling")
+        C_all = _load_camera_centers(paths)
+        s, R, t, level_angle_deg, scale_source, units = solve_none(P_all, C_all, cfg, cfg.seed)
         inliers = np.zeros(len(C), bool)
     else:
         if cfg.mode == "sim3":
@@ -269,7 +336,8 @@ def run(ctx: "StageContext") -> dict:
     hold_h = ho["h"]
 
     n_inl = int(inliers.sum()) if len(C) else 0
-    _write_outputs(paths, pairs, s, R, t, branch, collinearity, res, inliers)
+    _write_outputs(paths, pairs, s, R, t, branch, collinearity, res, inliers,
+                   scale_source, units)
 
     metrics = {
         "georeferenced": bool(georeferenced),
@@ -278,6 +346,9 @@ def run(ctx: "StageContext") -> dict:
         "pairs": len(pairs),
         "inliers": n_inl,
         "scale": round(float(s), 6),
+        "scale_source": scale_source,
+        "units": units,
+        "level_angle_deg": (round(level_angle_deg, 3) if level_angle_deg is not None else None),
         "rmse_h": round(rmse_h, 4),
         "rmse_v": round(rmse_v, 4),
         "rmse_h_all": round(rmse_h_all, 4),
@@ -297,9 +368,10 @@ def run(ctx: "StageContext") -> dict:
         "seconds": round(time.time() - t0, 3),
     }
     ctx.log.info("georef: branch=%s pairs=%d inliers=%d scale=%.4f "
-                 "rmse_h=%.2fm (all %.2fm) holdout_h=%.2fm (all %.2fm) folds=%s drift=%.1f%%",
+                 "rmse_h=%.2fm (all %.2fm) holdout_h=%.2fm (all %.2fm) folds=%s drift=%.1f%% "
+                 "scale_source=%s level_angle=%s",
                  branch, len(pairs), n_inl, s, rmse_h, rmse_h_all,
-                 ho["h"], ho["h_all"], ho["folds_h"], drift)
+                 ho["h"], ho["h_all"], ho["folds_h"], drift, scale_source, level_angle_deg)
     if georeferenced and n_inl < 0.7 * len(pairs):
         ctx.warn(f"only {n_inl}/{len(pairs)} GPS pairs are inliers (<70%)")
     if georeferenced and np.isfinite(hold_h) and hold_h > 5.0:
@@ -309,12 +381,14 @@ def run(ctx: "StageContext") -> dict:
     return metrics
 
 
-def _write_outputs(paths, pairs, s, R, t, branch, collinearity, res, inliers):
+def _write_outputs(paths, pairs, s, R, t, branch, collinearity, res, inliers,
+                   scale_source=None, units=None):
     paths.georef.mkdir(parents=True, exist_ok=True)
     paths.georef_transform.write_text(json.dumps({
         "s": float(s), "R": np.asarray(R, float).tolist(),
         "t": np.asarray(t, float).tolist(),
         "branch": branch, "collinearity": float(collinearity),
+        "scale_source": scale_source, "units": units,
     }, indent=2), encoding="utf-8")
 
     rr = pd.DataFrame({

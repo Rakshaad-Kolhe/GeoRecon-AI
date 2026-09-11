@@ -72,16 +72,19 @@ def run(ctx: "StageContext") -> dict:
     kf = st.get("keyframes", {})
 
     # ---- accuracy ----------------------------------------------------
-    accuracy = {
-        "branch": g.get("branch"),
-        "rmse_h": g.get("rmse_h"), "rmse_v": g.get("rmse_v"),
-        "holdout_rmse_h": g.get("holdout_rmse_h"),
-        "holdout_rmse_v": g.get("holdout_rmse_v"),
-        "inliers": g.get("inliers"), "pairs": g.get("pairs"),
-        "excluded_images": len(dn.get("excluded_images", []) or []),
-        "scale_drift_pct": g.get("scale_drift_pct"),
-        "mean_reproj_px": s.get("mean_reproj_px"),
-    }
+    if g.get("georeferenced"):
+        accuracy = {
+            "branch": g.get("branch"),
+            "rmse_h": g.get("rmse_h"), "rmse_v": g.get("rmse_v"),
+            "holdout_rmse_h": g.get("holdout_rmse_h"),
+            "holdout_rmse_v": g.get("holdout_rmse_v"),
+            "inliers": g.get("inliers"), "pairs": g.get("pairs"),
+            "excluded_images": len(dn.get("excluded_images", []) or []),
+            "scale_drift_pct": g.get("scale_drift_pct"),
+            "mean_reproj_px": s.get("mean_reproj_px"),
+        }
+    else:
+        accuracy = "n/a — no GPS telemetry"
 
     # ---- completeness ---------------------------------------------
     duration_s = float(ing.get("video", {}).get("duration_s") or 0.0)
@@ -125,8 +128,9 @@ def run(ctx: "StageContext") -> dict:
         ctx.warn(f"DSM coverage {coverage:.0f}% (<80%) — thin / holey dense cloud")
 
     _write_summary_md(paths.summary_md, summary, kf10)
+    holdout_h = accuracy["holdout_rmse_h"] if isinstance(accuracy, dict) else None
     ctx.log.info("validate: holdout_h=%.2fm registered=%.0f%% coverage=%s%%",
-                 accuracy["holdout_rmse_h"] or 0.0,
+                 holdout_h or 0.0,
                  completeness["registered_pct"] or 0.0, coverage)
     return {"summary": summary, "coverage_pct": coverage,
             "seconds": round(perf_counter() - t0, 3)}
@@ -144,16 +148,19 @@ def _write_summary_md(path: Path, summary: dict, kf10) -> None:
     a, c, sp = summary["accuracy"], summary["completeness"], summary["speed"]
     lines = ["# GeoRecon AI — run summary", ""]
 
-    lines += ["## Accuracy", "",
-              "| metric | value |", "|---|---|",
-              f"| Hold-out RMSE horizontal | {_fmt(a['holdout_rmse_h'])} m |",
-              f"| Hold-out RMSE vertical | {_fmt(a['holdout_rmse_v'])} m |",
-              f"| Fit RMSE h / v | {_fmt(a['rmse_h'])} / {_fmt(a['rmse_v'])} m |",
-              f"| GPS inliers | {_fmt(a['inliers'])} / {_fmt(a['pairs'])} |",
-              f"| Outlier frames excluded | {_fmt(a['excluded_images'])} |",
-              f"| Scale drift | {_fmt(a['scale_drift_pct'])} % |",
-              f"| Mean reprojection error | {_fmt(a['mean_reproj_px'])} px |",
-              f"| Georef branch | {_fmt(a['branch'])} |", ""]
+    if isinstance(a, dict):
+        lines += ["## Accuracy", "",
+                  "| metric | value |", "|---|---|",
+                  f"| Hold-out RMSE horizontal | {_fmt(a['holdout_rmse_h'])} m |",
+                  f"| Hold-out RMSE vertical | {_fmt(a['holdout_rmse_v'])} m |",
+                  f"| Fit RMSE h / v | {_fmt(a['rmse_h'])} / {_fmt(a['rmse_v'])} m |",
+                  f"| GPS inliers | {_fmt(a['inliers'])} / {_fmt(a['pairs'])} |",
+                  f"| Outlier frames excluded | {_fmt(a['excluded_images'])} |",
+                  f"| Scale drift | {_fmt(a['scale_drift_pct'])} % |",
+                  f"| Mean reprojection error | {_fmt(a['mean_reproj_px'])} px |",
+                  f"| Georef branch | {_fmt(a['branch'])} |", ""]
+    else:
+        lines += ["## Accuracy", "", a, ""]
 
     lines += ["## Completeness", "",
               "| metric | value |", "|---|---|",

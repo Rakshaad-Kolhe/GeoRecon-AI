@@ -76,15 +76,17 @@ def _registered_cameras(cameras_csv: Path, frames_csv: Path, residuals_csv: Path
     return out
 
 
-def _write_las(path: Path, e, n, z, rgb, epsg: int) -> None:
+def _write_las(path: Path, e, n, z, rgb, epsg: int | None) -> None:
     import laspy
-    import pyproj
 
     xyz = np.column_stack([e, n, z]).astype(float)
     hdr = laspy.LasHeader(point_format=3, version="1.4")
     hdr.scales = [0.001, 0.001, 0.001]
     hdr.offsets = np.floor(xyz.min(axis=0))
-    hdr.add_crs(pyproj.CRS.from_epsg(int(epsg)))
+    if epsg is not None:
+        import pyproj
+
+        hdr.add_crs(pyproj.CRS.from_epsg(int(epsg)))
     las = laspy.LasData(hdr)
     las.x, las.y, las.z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
     r16 = np.asarray(rgb, np.uint16) * 257
@@ -155,8 +157,17 @@ def run(ctx: "StageContext") -> dict:
     out.mkdir(parents=True, exist_ok=True)
     web.mkdir(parents=True, exist_ok=True)
 
-    origin = json.loads(paths.georef_origin.read_text(encoding="utf-8"))
-    epsg = int(origin["utm_epsg"])
+    tr = (json.loads(paths.georef_transform.read_text(encoding="utf-8"))
+          if paths.georef_transform.exists() else {})
+    georeferenced = paths.georef_origin.exists()
+    scale_source = tr.get("scale_source") or ("gps" if georeferenced else None)
+    units = tr.get("units") or ("m" if georeferenced else None)
+
+    origin = None
+    epsg = None
+    if georeferenced:
+        origin = json.loads(paths.georef_origin.read_text(encoding="utf-8"))
+        epsg = int(origin["utm_epsg"])
 
     d = read_ply(paths.dense_fused)
     xyz = np.column_stack([d["x"], d["y"], d["z"]]).astype(np.float32)
@@ -173,9 +184,12 @@ def run(ctx: "StageContext") -> dict:
     shutil.copy2(paths.dense_fused, out / "pointcloud.ply")
     _record(out / "pointcloud.ply")
 
-    # ---- LAS (UTM, ellipsoidal Z) ---------------------------------------
-    e, n, ell = _enu_to_utm(xyz[:, 0], xyz[:, 1], xyz[:, 2], origin)
-    _write_las(out / "pointcloud.las", e, n, ell, rgb, epsg)
+    # ---- LAS (UTM, ellipsoidal Z if georeferenced; local coords, no CRS otherwise)
+    if georeferenced:
+        e, n, ell = _enu_to_utm(xyz[:, 0], xyz[:, 1], xyz[:, 2], origin)
+        _write_las(out / "pointcloud.las", e, n, ell, rgb, epsg)
+    else:
+        _write_las(out / "pointcloud.las", xyz[:, 0], xyz[:, 1], xyz[:, 2], rgb, None)
     _record(out / "pointcloud.las")
 
     # ---- mesh: OBJ (ENU) + GLB (+Y up) --------------------------------
@@ -190,47 +204,63 @@ def run(ctx: "StageContext") -> dict:
     (out / "model.glb").write_bytes(glb.export(file_type="glb"))
     _record(out / "model.glb")
 
-    (out / "georef.json").write_text(json.dumps({
-        "origin": {k: origin[k] for k in ("lat", "lon", "alt")},
-        "utm_epsg": epsg,
-        "frame": "local ENU, +Z up, metres",
-        "height_ref": "ellipsoidal (GPS)",
-    }, indent=2), encoding="utf-8")
+    if georeferenced:
+        (out / "georef.json").write_text(json.dumps({
+            "origin": {k: origin[k] for k in ("lat", "lon", "alt")},
+            "utm_epsg": epsg,
+            "frame": "local ENU, +Z up, metres",
+            "height_ref": "ellipsoidal (GPS)",
+        }, indent=2), encoding="utf-8")
+    else:
+        (out / "georef.json").write_text(json.dumps({
+            "origin": None, "utm_epsg": None,
+            "frame": "local (unreferenced), +Z up",
+            "height_ref": "n/a", "units": units, "scale_source": scale_source,
+        }, indent=2), encoding="utf-8")
     _record(out / "georef.json")
 
-    # ---- DSM + colour raster (UTM) --------------------------------------
-    from rasterio.fill import fillnodata
-
+    # ---- DSM + colour raster + trajectory GeoJSON (georeferenced only: they
+    # need a UTM CRS, which requires GPS telemetry) ------------------------
     cell = max(0.1, 2.0 * med_sp)
-    dsm, color, e0, n1 = _rasterise(e, n, ell, rgb, cell)
-    dsm_filled = fillnodata(dsm.copy(), mask=(dsm != -9999.0).astype(np.uint8),
-                            max_search_distance=3)
-    _write_geotiff(out / "dsm.tif", dsm_filled, e0, n1, cell, epsg, nodata=-9999.0)
-    _write_geotiff(out / "color.tif", color, e0, n1, cell, epsg)
-    _record(out / "dsm.tif")
-    _record(out / "color.tif")
-    dsm_h, dsm_w = dsm.shape
+    dsm_h = dsm_w = None
+    if georeferenced:
+        from rasterio.fill import fillnodata
 
-    # ---- trajectory GeoJSON --------------------------------------------
-    cams = _registered_cameras(paths.georef_cameras, paths.frames_csv,
-                               paths.georef_residuals)
+        e, n, ell = _enu_to_utm(xyz[:, 0], xyz[:, 1], xyz[:, 2], origin)
+        dsm, color, e0, n1 = _rasterise(e, n, ell, rgb, cell)
+        dsm_filled = fillnodata(dsm.copy(), mask=(dsm != -9999.0).astype(np.uint8),
+                                max_search_distance=3)
+        _write_geotiff(out / "dsm.tif", dsm_filled, e0, n1, cell, epsg, nodata=-9999.0)
+        _write_geotiff(out / "color.tif", color, e0, n1, cell, epsg)
+        _record(out / "dsm.tif")
+        _record(out / "color.tif")
+        dsm_h, dsm_w = dsm.shape
+
+        cams = _registered_cameras(paths.georef_cameras, paths.frames_csv,
+                                   paths.georef_residuals)
+        feats = []
+        if cams:
+            clat, clon, calt = geo.enu_to_wgs84(
+                np.array([c[1] for c in cams]), np.array([c[2] for c in cams]),
+                np.array([c[3] for c in cams]), origin)
+            line = [[round(float(lo), 8), round(float(la), 8), round(float(al), 3)]
+                    for la, lo, al in zip(clat, clon, calt)]
+            feats.append({"type": "Feature", "properties": {"kind": "trajectory"},
+                          "geometry": {"type": "LineString", "coordinates": line}})
+            for (name, _e, _n, _u, t, inl), pt in zip(cams, line):
+                feats.append({"type": "Feature",
+                              "properties": {"name": name, "t": t, "inlier": bool(inl)},
+                              "geometry": {"type": "Point", "coordinates": pt}})
+        (out / "trajectory.geojson").write_text(
+            json.dumps({"type": "FeatureCollection", "features": feats}), encoding="utf-8")
+        _record(out / "trajectory.geojson")
+    else:
+        cams = _registered_cameras(paths.georef_cameras, paths.frames_csv,
+                                   paths.georef_residuals)
+        ctx.log.info("export: skipping dsm.tif/color.tif/trajectory.geojson "
+                     "(no GPS telemetry -> no CRS to project into)")
+
     traj_enu = [[round(c[1], 3), round(c[2], 3), round(c[3], 3)] for c in cams]
-    feats = []
-    if cams:
-        clat, clon, calt = geo.enu_to_wgs84(
-            np.array([c[1] for c in cams]), np.array([c[2] for c in cams]),
-            np.array([c[3] for c in cams]), origin)
-        line = [[round(float(lo), 8), round(float(la), 8), round(float(al), 3)]
-                for la, lo, al in zip(clat, clon, calt)]
-        feats.append({"type": "Feature", "properties": {"kind": "trajectory"},
-                      "geometry": {"type": "LineString", "coordinates": line}})
-        for (name, _e, _n, _u, t, inl), pt in zip(cams, line):
-            feats.append({"type": "Feature",
-                          "properties": {"name": name, "t": t, "inlier": bool(inl)},
-                          "geometry": {"type": "Point", "coordinates": pt}})
-    (out / "trajectory.geojson").write_text(
-        json.dumps({"type": "FeatureCollection", "features": feats}), encoding="utf-8")
-    _record(out / "trajectory.geojson")
 
     # ---- web assets ---------------------------------------------------
     w_xyz, w_cols = xyz, {"red": rgb[:, 0], "green": rgb[:, 1], "blue": rgb[:, 2],
@@ -252,24 +282,29 @@ def run(ctx: "StageContext") -> dict:
     lo = xyz.min(axis=0).round(3).tolist()
     hi = xyz.max(axis=0).round(3).tolist()
     (web / "meta.json").write_text(json.dumps({
-        "origin": {k: origin[k] for k in ("lat", "lon", "alt")},
-        "utm_epsg": epsg, "units": "m", "up": "+Z",
+        "georeferenced": georeferenced,
+        "origin": ({k: origin[k] for k in ("lat", "lon", "alt")} if georeferenced else None),
+        "utm_epsg": epsg, "units": units, "scale_source": scale_source, "up": "+Z",
         "bbox_enu": {"min": lo, "max": hi},
         "points": int(len(xyz)),
         "triangles": int(len(mesh.faces)),
         "median_spacing_m": round(med_sp, 4),
         "trajectory_enu": traj_enu,
-        "height_ref": "ellipsoidal (GPS)",
+        "height_ref": "ellipsoidal (GPS)" if georeferenced else "n/a",
     }, indent=2), encoding="utf-8")
 
     for p in (web / "pointcloud.ply", web / "mesh.ply", web / "meta.json"):
         _record(p)
 
-    ctx.log.info("export: %d files, DSM %dx%d @ %.2fm", len(files), dsm_w, dsm_h, cell)
+    ctx.log.info("export: %d files, DSM %s @ %.2fm", len(files),
+                 f"{dsm_w}x{dsm_h}" if dsm_w else "n/a", cell)
+    formats = (["ply", "las", "obj", "glb", "tif", "geojson", "json"] if georeferenced
+              else ["ply", "las", "obj", "glb", "json"])
     return {
         "files": files,
+        "georeferenced": georeferenced,
         "dsm_cell_m": round(cell, 4),
         "dsm_size_px": [dsm_w, dsm_h],
-        "formats": ["ply", "las", "obj", "glb", "tif", "geojson", "json"],
+        "formats": formats,
         "seconds": round(perf_counter() - t0, 3),
     }
