@@ -175,6 +175,8 @@ class MeshCfg(BaseModel):
     max_tris: int = 200_000     # decimation target
     min_points_for_poisson: int = 50_000
     max_seconds: float = 300.0  # poisson over this -> heightfield fallback
+    colour_views: int = 3       # top-K candidate views per vertex (1 = legacy best-view)
+    colour_gain: bool = True    # apply per-image gain compensation before blending
 
 
 class JobConfig(BaseModel):
@@ -227,7 +229,9 @@ class JobConfig(BaseModel):
         if self.mesh != MeshCfg():
             return self.mesh
         return MeshCfg(poisson_depth=p.poisson_depth, max_tris=p.mesh_max_tris,
-                       poisson_trim=p.mesh_trim)
+                       poisson_trim=p.mesh_trim,
+                       colour_views=self.mesh.colour_views,
+                       colour_gain=self.mesh.colour_gain)
 
     def to_json(self, job_dir) -> Path:
         path = Path(job_dir) / "config.json"

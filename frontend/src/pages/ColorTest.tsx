@@ -84,8 +84,10 @@ function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
       ortho.position.set(0, 0, 5)
       ortho.lookAt(0, 0, 0)
       ortho.updateProjectionMatrix()
-      const w = size.width || gl.domElement.width || 256
-      const h = size.height || gl.domElement.height || 256
+      const bufSize = new THREE.Vector2()
+      gl.getDrawingBufferSize(bufSize)
+      const w = bufSize.x || 256
+      const h = bufSize.y || 256
 
       // --- 1. Hand-built grey vertex-coloured quad ---
       const greyVertScene = new THREE.Scene()
@@ -202,7 +204,7 @@ function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
       const cloudMat = new THREE.PointsMaterial({
         vertexColors: true,
         sizeAttenuation: false,
-        size: 64,
+        size: 80,
       })
       cloudMat.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
@@ -281,6 +283,7 @@ export function ColorTest() {
       {/* Hidden canvas for test rendering */}
       <Canvas
         key={runId}
+        dpr={1}
         style={{
           width: 256,
           height: 256,

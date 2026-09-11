@@ -93,7 +93,8 @@ _TOP_K = 3
 
 def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: Path,
                              cameras_enu_csv: Path, scale: float,
-                             tol_frac: float = 0.02, facing_thr: float = -0.2):
+                             tol_frac: float = 0.02, facing_thr: float = -0.2,
+                             top_k: int = _TOP_K, apply_gain: bool = True):
     """Per-vertex colour using multi-view weighted-median blending.
 
     For each vertex up to ``_TOP_K`` unoccluded candidate views are collected,
@@ -137,10 +138,8 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
 
     # Accumulate per-vertex: list of (score, rgb_float) from each qualified camera.
     # We store only the top-K per vertex to cap memory.
-    top_scores: list[np.ndarray] = [np.full(n, -np.inf)] * _TOP_K   # shape (K, N)
-    top_rgb: list[np.ndarray] = [np.zeros((n, 3), float)] * _TOP_K  # shape (K, N, 3)
-    top_scores = [np.full(n, -np.inf) for _ in range(_TOP_K)]
-    top_rgb = [np.zeros((n, 3), float) for _ in range(_TOP_K)]
+    top_scores = [np.full(n, -np.inf) for _ in range(top_k)]
+    top_rgb = [np.zeros((n, 3), float) for _ in range(top_k)]
 
     for row in cams.itertuples():
         name = row.name
@@ -189,14 +188,14 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
         col_rgb = col_bgr[:, ::-1]   # BGR -> RGB
 
         # Insert into per-vertex top-K heap (slot 0 = best, slot K-1 = weakest kept)
-        for k in range(_TOP_K):
+        for k in range(top_k):
             take = score > top_scores[k][cand_idx]
             if not take.any():
                 break
             take_idx = cand_idx[take]
             # push current slot-k down to slot k+1 before overwriting
-            if k + 1 < _TOP_K:
-                for kk in range(_TOP_K - 1, k, -1):
+            if k + 1 < top_k:
+                for kk in range(top_k - 1, k, -1):
                     top_scores[kk][take_idx] = top_scores[kk - 1][take_idx]
                     top_rgb[kk][take_idx] = top_rgb[kk - 1][take_idx]
             top_scores[k][take_idx] = score[take]
@@ -215,33 +214,34 @@ def view_based_vertex_colors(vertices: np.ndarray, normals: np.ndarray, ws_dir: 
 
     any_valid = valid_k.any(axis=0)               # (N,)
     if any_valid.any():
-        # Global multi-view median per vertex channel (over valid slots)
-        mv_med = np.zeros((n, 3), float)
-        for c in range(3):
-            ch = stacked[:, :, c]                  # (K, N)
-            for vi in np.flatnonzero(any_valid):
-                vals = ch[valid_k[:, vi], vi]
-                mv_med[vi, c] = float(np.median(vals))
+        if apply_gain and top_k > 1:
+            # Global multi-view median per vertex channel (over valid slots)
+            mv_med = np.zeros((n, 3), float)
+            for c in range(3):
+                ch = stacked[:, :, c]                  # (K, N)
+                for vi in np.flatnonzero(any_valid):
+                    vals = ch[valid_k[:, vi], vi]
+                    mv_med[vi, c] = float(np.median(vals))
 
-        # Per-camera gain = median of (sampled / mv_med) over vertices where
-        # both the slot and mv_med are valid. Apply per-slot.
-        for k in range(_TOP_K):
-            vk = valid_k[k]                        # (N,) — vertices filled in slot k
-            if not vk.any():
-                continue
-            ref = mv_med[vk]                       # (Mv, 3)
-            smp = stacked[k][vk]                  # (Mv, 3)
-            denom = np.where(ref > 1e-3, ref, np.nan)
-            ratio = np.where(ref > 1e-3, smp / denom, np.nan)
-            # per-channel median gain across vertices covered by this slot
-            gain = np.nanmedian(ratio, axis=0)     # (3,)
-            gain = np.clip(gain, 0.7, 1.4)
-            top_rgb[k][vk] = np.clip(smp * gain, 0, 255)
+            # Per-camera gain = median of (sampled / mv_med) over vertices where
+            # both the slot and mv_med are valid. Apply per-slot.
+            for k in range(top_k):
+                vk = valid_k[k]                        # (N,) — vertices filled in slot k
+                if not vk.any():
+                    continue
+                ref = mv_med[vk]                       # (Mv, 3)
+                smp = stacked[k][vk]                  # (Mv, 3)
+                denom = np.where(ref > 1e-3, ref, np.nan)
+                ratio = np.where(ref > 1e-3, smp / denom, np.nan)
+                # per-channel median gain across vertices covered by this slot
+                gain = np.nanmedian(ratio, axis=0)     # (3,)
+                gain = np.clip(gain, 0.7, 1.4)
+                top_rgb[k][vk] = np.clip(smp * gain, 0, 255)
 
         # ---- weighted median per vertex ----------------------------------------
         for vi in np.flatnonzero(any_valid):
-            w_all = np.array([top_scores[k][vi] for k in range(_TOP_K)])
-            c_all = np.array([top_rgb[k][vi] for k in range(_TOP_K)])
+            w_all = np.array([top_scores[k][vi] for k in range(top_k)])
+            c_all = np.array([top_rgb[k][vi] for k in range(top_k)])
             valid_k_vi = w_all > -np.inf
             w = w_all[valid_k_vi]
             c = c_all[valid_k_vi]
@@ -661,7 +661,8 @@ def run(ctx: "StageContext") -> dict:
     if ws_dir.exists():
         try:
             view_colors, covered = view_based_vertex_colors(
-                mesh.vertices, mesh.vertex_normals, ws_dir, paths.georef_cameras, scale)
+                mesh.vertices, mesh.vertex_normals, ws_dir, paths.georef_cameras, scale,
+                top_k=mcfg.colour_views, apply_gain=mcfg.colour_gain)
             vcol[covered] = view_colors[covered]
             colour_view_coverage = round(float(covered.mean()), 4) if len(covered) else 0.0
         except Exception as exc:                       # noqa: BLE001
