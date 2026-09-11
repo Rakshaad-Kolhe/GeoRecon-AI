@@ -45,20 +45,24 @@ interface Props {
   onMeshLoadState: (s: AssetLoadState) => void
 }
 
-function bboxMetrics(meta: ViewerMeta) {
-  // Prefer ROI bbox if available, fall back to full bbox
-  const box = meta.roi_enu ?? meta.bbox_enu
-  const { min, max } = box
+function bboxMetrics(meta?: Partial<ViewerMeta>) {
+  // Prefer ROI bbox if available, fall back to full bbox, then unit cube
+  const box = meta?.roi_enu ?? meta?.bbox_enu
+  const min = box?.min ?? [-1, -1, -1]
+  const max = box?.max ?? [1, 1, 1]
   const center = new THREE.Vector3(
     (min[0] + max[0]) / 2,
     (min[1] + max[1]) / 2,
     (min[2] + max[2]) / 2,
   )
-  const diag = new THREE.Vector3(
-    max[0] - min[0],
-    max[1] - min[1],
-    max[2] - min[2],
-  ).length()
+  const diag = Math.max(
+    0.1,
+    new THREE.Vector3(
+      max[0] - min[0],
+      max[1] - min[1],
+      max[2] - min[2],
+    ).length(),
+  )
   // Ground target: centre of bbox at lowest Z
   const groundTarget = new THREE.Vector3(center.x, center.y, min[2])
   return { diag, groundTarget, center }

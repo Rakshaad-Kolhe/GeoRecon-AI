@@ -14,8 +14,9 @@
  */
 
 import { Canvas, useThree } from '@react-three/fiber'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import * as THREE from 'three'
+import { srgbToLinear } from '../lib/colormaps'
 
 // -------------------------------------------------------------------------- //
 // readback helper
@@ -52,17 +53,12 @@ interface TestResult {
   pass: boolean
 }
 
-function QuadScene({ onResults }: QuadSceneProps) {
+function QuadScene({ onResults, runId }: QuadSceneProps & { runId: number }) {
   const { gl, size, scene, camera } = useThree()
-  const reported = useRef(false)
 
   useEffect(() => {
-    if (reported.current) return
-
     // Give React a frame to mount and render
     const raf = requestAnimationFrame(() => {
-      reported.current = true
-
       // Force a single render of the current scene
       gl.render(scene, camera)
 
@@ -73,7 +69,7 @@ function QuadScene({ onResults }: QuadSceneProps) {
       const greyVertGeo = new THREE.PlaneGeometry(2, 2)
       const n = greyVertGeo.attributes.position.count
       const greyArr = new Float32Array(n * 3)
-      const v = 128 / 255  // sRGB 128
+      const v = srgbToLinear(128 / 255) // sRGB 128 converted to linear for Three.js sRGB output
       for (let i = 0; i < n * 3; i++) greyArr[i] = v
       greyVertGeo.setAttribute('color', new THREE.BufferAttribute(greyArr, 3))
       const greyVertMat = new THREE.MeshBasicMaterial({
@@ -83,9 +79,12 @@ function QuadScene({ onResults }: QuadSceneProps) {
       greyVertScene.add(new THREE.Mesh(greyVertGeo, greyVertMat))
 
       const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+      const w = size.width || gl.domElement.width || 256
+      const h = size.height || gl.domElement.height || 256
+
       gl.render(greyVertScene, ortho)
-      const p1 = readCentrePixel(gl, size.width, size.height)
-      const pass1 = p1.every(c => Math.abs(c - 128) <= 3)
+      const p1 = readCentrePixel(gl, w, h)
+      const pass1 = p1.every((c) => Math.abs(c - 128) <= 3)
       results.push({
         label: '128-grey vertex-coloured quad',
         pixel: p1,
@@ -102,8 +101,8 @@ function QuadScene({ onResults }: QuadSceneProps) {
       const greyTexMat = new THREE.MeshBasicMaterial({ map: greyTex, toneMapped: false })
       greyTexScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), greyTexMat))
       gl.render(greyTexScene, ortho)
-      const p2 = readCentrePixel(gl, size.width, size.height)
-      const pass2 = p2.every(c => Math.abs(c - 128) <= 3)
+      const p2 = readCentrePixel(gl, w, h)
+      const pass2 = p2.every((c) => Math.abs(c - 128) <= 3)
       results.push({
         label: '128-grey textured quad',
         pixel: p2,
@@ -117,15 +116,15 @@ function QuadScene({ onResults }: QuadSceneProps) {
       const nRed = redGeo.attributes.position.count
       const redArr = new Float32Array(nRed * 3)
       for (let i = 0; i < nRed; i++) {
-        redArr[i * 3 + 0] = 1.0  // R
-        redArr[i * 3 + 1] = 0.0  // G
-        redArr[i * 3 + 2] = 0.0  // B
+        redArr[i * 3 + 0] = 1.0 // R
+        redArr[i * 3 + 1] = 0.0 // G
+        redArr[i * 3 + 2] = 0.0 // B
       }
       redGeo.setAttribute('color', new THREE.BufferAttribute(redArr, 3))
       const redMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })
       redScene.add(new THREE.Mesh(redGeo, redMat))
       gl.render(redScene, ortho)
-      const p3 = readCentrePixel(gl, size.width, size.height)
+      const p3 = readCentrePixel(gl, w, h)
       const pass3 = p3[0] > 240 && p3[1] < 15 && p3[2] < 15
       results.push({
         label: 'Pure-red vertex-coloured quad',
@@ -138,7 +137,7 @@ function QuadScene({ onResults }: QuadSceneProps) {
       onResults(results)
     })
     return () => cancelAnimationFrame(raf)
-  }, [gl, size, scene, camera, onResults])
+  }, [gl, size, scene, camera, onResults, runId])
 
   // Render nothing visible; all tests run off-screen
   return null
@@ -149,21 +148,42 @@ function QuadScene({ onResults }: QuadSceneProps) {
 // -------------------------------------------------------------------------- //
 export function ColorTest() {
   const [results, setResults] = useState<TestResult[] | null>(null)
-  const allPass = results?.every(r => r.pass) ?? false
+  const [runId, setRunId] = useState(0)
+  const allPass = results?.every((r) => r.pass) ?? false
 
   return (
     <div className="min-h-screen bg-slate-950 p-8 font-mono text-slate-200">
-      <h1 className="mb-6 text-2xl font-bold text-white">
-        Colour Pipeline Test Harness
-      </h1>
-      <p className="mb-6 text-sm text-slate-400">
-        Phase A — verifies that sRGB colours pass through the WebGL pipeline
-        without double-conversion. All pixel reads use <code>gl.readPixels</code>.
-      </p>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Colour Pipeline Test Harness</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Phase A — verifies that sRGB colours pass through the WebGL pipeline without
+            double-conversion. All pixel reads use <code>gl.readPixels</code>.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setResults(null)
+            setRunId((id) => id + 1)
+          }}
+          className="rounded bg-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700"
+        >
+          Rerun Tests
+        </button>
+      </div>
 
       {/* Hidden canvas for test rendering */}
       <Canvas
-        style={{ width: 256, height: 256, display: 'none' }}
+        key={runId}
+        style={{
+          width: 256,
+          height: 256,
+          position: 'fixed',
+          top: -9999,
+          left: -9999,
+          pointerEvents: 'none',
+        }}
         gl={{
           antialias: false,
           preserveDrawingBuffer: true,
@@ -174,7 +194,7 @@ export function ColorTest() {
           state.gl.outputColorSpace = THREE.SRGBColorSpace
         }}
       >
-        <QuadScene onResults={setResults} />
+        <QuadScene onResults={setResults} runId={runId} />
       </Canvas>
 
       {results === null ? (
